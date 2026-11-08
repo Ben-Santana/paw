@@ -1,4 +1,4 @@
-# NeuralIOS
+# RunesIOS
 
 Native iPhone client for Meta Neural Band connection, verified enrollment, built-in gesture reception, and background sessions. Requires **iOS 26 or later** and full **Xcode 26 or later with an iOS SDK supporting the connected phone**. The checked-in Xcode project opens directly; Python and project-generation tools are not required to build or run it.
 
@@ -7,8 +7,8 @@ This is the first implementation of the product's native connection and gesture 
 ## Open and install
 
 1. Install full Xcode and its iOS platform support. Command Line Tools alone cannot build this app. Launch Xcode once to finish installation. If needed select it with `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`.
-2. Open `NeuralIOS.xcodeproj` and choose the **NeuralIOS** scheme.
-3. In Xcode Settings → Accounts, sign in to your Apple Account. Select your team in **Signing & Capabilities for both NeuralIOS and NeuralActivity**. If these bundle identifiers are unavailable, change the app identifier and give the extension the same prefix plus `.activity`.
+2. Open `RunesIOS.xcodeproj` and choose the **RunesIOS** scheme.
+3. In Xcode Settings → Accounts, sign in to your Apple Account. Select your team in **Signing & Capabilities for both RunesIOS and RunesActivity**. If these bundle identifiers are unavailable, change the app identifier and give the extension the same prefix plus `.activity`.
 4. Connect your iPhone, trust the Mac, and enable **Settings → Privacy & Security → Developer Mode** if prompted. Select the phone as the run destination and press Run. No App Store submission is required for local development.
 5. A free Personal Team can be used for local development where supported; its short provisioning lifetime requires periodically rebuilding. Xcode will report any account/capability limitations.
 
@@ -16,11 +16,19 @@ The Simulator can run the interface but is not evidence of Bluetooth, pairing, o
 
 ## Using the app
 
-On first launch Neural walks through setup: welcome → allow Bluetooth → pairing mode → choose your band → Meta sign-in (with a plain warning that the band may disconnect from other devices such as the Mac) → a "tap your index finger" check → done. A band that already has a saved setup on this phone skips sign-in. **Use my Mac’s setup instead** imports the Mac identity by QR (see below) rather than signing in.
+On first launch Runes walks through setup: welcome → allow Bluetooth → pairing mode → choose your band → Meta sign-in (with a plain warning that the band may disconnect from other devices such as the Mac) → a "tap your index finger" check → done. A band that already has a saved setup on this phone skips sign-in. **Use my Mac’s setup instead** imports the Mac identity by QR (see below) rather than signing in.
 
 After setup the main screen is a single ring that shows **Not set up, Connecting, Connected or Needs attention**, and it ripples when a gesture arrives. Battery, wrist and last gesture sit under it, and the Mac link (`SessionController.relayStatus`) appears as one line at the bottom. Problems appear as one sentence and one button. Protocol detail never appears on screen; it goes to the journal. Settings has forget band, haptics, battery alerts, privacy and licenses. **Settings → Advanced** holds journal export, Mac test receiver pairing, Mac identity import and raw packets.
 
-The look follows the Mac app (`docs/design.md`): monochrome, Geist (bundled under the OFL in `Resources/Fonts`), 6 px controls, 8 px panels, 200 ms motion, plus a matching dark mode. Reduce Motion and Dynamic Type are respected. SwiftUI previews in `Views/Previews.swift` use fixed view states. In DEBUG builds, `NEURAL_SNAPSHOT=<name>` shows one of those states for screenshots without starting the session. There is still no simulated band.
+The look follows the Mac app (`docs/design.md`): monochrome, Geist (bundled under the OFL in `Resources/Fonts`), 6 px controls, 8 px panels, 200 ms motion, plus a matching dark mode. Reduce Motion and Dynamic Type are respected. SwiftUI previews in `Views/Previews.swift` use fixed view states. In DEBUG builds, `RUNES_SNAPSHOT=<name>` shows one of those states for screenshots without starting the session. There is still no simulated band.
+
+## Mappings
+
+The hand button on the home screen opens **Mappings**, the iPhone version of the Mac app's Motions page: profiles, one row per gesture, combos (2–8 steps, hold/release pairing, the Mac's timing choices; steps can be recorded from the band), and one action or several linked actions run in order. `Mappings/MappingEngine.swift` is a port of the Mac's `ShortcutEngine` combo logic. Actions are iPhone-native (Apple Shortcut, open link, web API, notification, copy, haptic, wait, profile switching). API calls, notifications and profile switches also run while the phone is locked; opening apps, copying and haptics need Runes on screen. Combos can also use **rotation** (axis, and left/right/either way) and **movement** (axis) steps, detected with the Mac's thresholds (25° rotation, gyroscope above 80 re-arming below 30). The phone asks the band for orientation and gyroscope only while a live combo uses them; the Mac relay still receives only the streams the Mac requested. Combos can also use **air gesture** steps (`Mappings/AirGesture.swift`, `Views/AirGestureEditor.swift`): a shape drawn with a finger or recorded with the band, matched with the Mac's DTW matcher after the preceding gesture, within the step's own 0.5–10 s window; competing shapes go to the highest similarity above its minimum. They're saved in the Mac's format. Icons are the Mac's: Lucide 0.468.0 path data in `Views/Design/LucideData.swift` (generated by `Tools/lucide-icons.js`) and the Mac's hand-drawn finger icons in `Views/Design/Icons.swift`.
+
+## Applications: Workouts
+
+The grid button on the home screen opens **Applications**. The first app is **Workouts** (`Workouts/`, `Views/WorkoutsView.swift`, `Views/WorkoutTabs.swift`, `Views/BodyMap.swift`). It has three tabs. **Today** shows a hairline body, front and back: each muscle fills with ink when a set trains it and fades by a seventh each day after, back to an outline after a week (muscles a set only works second-hand count half). Below it are Start workout, which asks which day of your split to do and suggests the one after your last, and this week's reps. **Split** holds your training days (a push/pull/legs starter on first launch); each day lists exercises with sets, target reps (seconds for timed ones) and an optional weight. **Journal** shows workouts this month, sets this week, a weekly streak, sets per week, sets per muscle over the last 7 days, each exercise's best and a per-session sparkline, and every session. The exercise picker (`Workouts/ExerciseCatalog.swift`, 112 exercises, most popular first) filters by group, searches by name, equipment or muscle, and marks the 28 exercises whose reps the band can count with a waveform. Reps come from the band's orientation (forearm swing away from where the set started) or gyroscope bursts. Exercises the band can't follow log their target reps when the set stops; timed ones log the time between start and stop. The gear on Workouts opens its settings: the four global gestures (start set, default double tap index; stop set, double tap middle; repeat last set, swipe left; skip set, swipe right), which don't run their mappings while a workout runs, Low/Normal/High rep sensitivity (thresholds are untuned guesses), kg or lb, and clearing the journal. The Live Activity shows the current exercise, the live count (throttled to 1 update/s), the last logged set and the next one, and it alerts with a sound when a set is logged. Checks: `Tests/WorkoutTests.swift` (see its header for the `swiftc` line).
 
 ## Staying connected
 
@@ -48,26 +56,26 @@ On the Mac, disconnect the band, then run `swift Tools/ShowMacIdentity.swift <Ma
 With full Xcode installed, simulator compilation requires no team:
 
 ```sh
-xcodebuild -project NeuralIOS.xcodeproj -scheme NeuralIOS -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project RunesIOS.xcodeproj -scheme RunesIOS -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
 For an unsigned device compilation:
 
 ```sh
-xcodebuild -project NeuralIOS.xcodeproj -scheme NeuralIOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project RunesIOS.xcodeproj -scheme RunesIOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-To install a standalone signed build, select your phone, edit the scheme's **Run → Info → Build Configuration** to **Release**, uncheck **Debug executable**, then Run. Stop the Xcode session and launch Neural from the phone's Home Screen. It does not use a Mac development server. Keep the same bundle ID and signing team between rebuilds to preserve the phone's Keychain identity.
+To install a standalone signed build, select your phone, edit the scheme's **Run → Info → Build Configuration** to **Release**, uncheck **Debug executable**, then Run. Stop the Xcode session and launch Runes from the phone's Home Screen. It does not use a Mac development server. Keep the same bundle ID and signing team between rebuilds to preserve the phone's Keychain identity.
 
 ## Structure and provenance
 
-- `NeuralIOS/Protocol`: bounded protobuf/DataX decoding, AirShield records, mutual trust, RPC and gesture subscription.
-- `NeuralIOS/Transport`: Core Bluetooth and L2CAP stream I/O on the session run loop.
-- `NeuralIOS/Authentication`: Meta service exchange, isolated login, persisted ownership ceremony.
-- `NeuralIOS/Session`: connection lifecycle, observable UI adapter, typed gestures, and Live Activity management.
-- `NeuralIOS/Persistence`: protected Keychain identity storage and rotating local journal.
-- `NeuralIOS/Views`: connection, gestures, packet details, and diagnostics.
-- `Shared` / `NeuralActivity`: ActivityKit attributes and Lock Screen/Dynamic Island presentation.
+- `RunesIOS/Protocol`: bounded protobuf/DataX decoding, AirShield records, mutual trust, RPC and gesture subscription.
+- `RunesIOS/Transport`: Core Bluetooth and L2CAP stream I/O on the session run loop.
+- `RunesIOS/Authentication`: Meta service exchange, isolated login, persisted ownership ceremony.
+- `RunesIOS/Session`: connection lifecycle, observable UI adapter, typed gestures, and Live Activity management.
+- `RunesIOS/Persistence`: protected Keychain identity storage and rotating local journal.
+- `RunesIOS/Views`: connection, gestures, packet details, and diagnostics.
+- `Shared` / `RunesActivity`: ActivityKit attributes and Lock Screen/Dynamic Island presentation.
 
 Protocol reference: the installed **meta-neural-py 0.1.0a1** source, captured as SHA-256 entries in `Documentation/ProtocolReference.sha256`. The Swift implementation is a port of the required paths, not an official Meta mobile SDK. Third-party attribution is in `THIRD_PARTY_NOTICES.md`. No neighboring repository is needed at runtime or build time.
 
@@ -76,8 +84,9 @@ Protocol reference: the installed **meta-neural-py 0.1.0a1** source, captured as
 ## Checks
 
 ```sh
-swiftc -module-cache-path /private/tmp/neural-swift-module-cache NeuralIOS/Session/Models.swift NeuralIOS/Protocol/Wire.swift NeuralIOS/Persistence/IdentityStore.swift Tools/ConnectionPolicyTests.swift -o /private/tmp/neural-connection-policy-tests && /private/tmp/neural-connection-policy-tests
-swiftc -module-cache-path /private/tmp/neural-swift-module-cache NeuralIOS/Session/Models.swift NeuralIOS/Session/BandStatus.swift NeuralIOS/Protocol/Wire.swift NeuralIOS/Persistence/IdentityStore.swift Tests/SessionPolicyTests.swift -o /private/tmp/neural-session-policy-tests && /private/tmp/neural-session-policy-tests
+swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift Tools/ConnectionPolicyTests.swift -o /private/tmp/runes-connection-policy-tests && /private/tmp/runes-connection-policy-tests
+swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Session/BandStatus.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift Tests/SessionPolicyTests.swift -o /private/tmp/runes-session-policy-tests && /private/tmp/runes-session-policy-tests
+swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift Tests/MappingEngineTests.swift -o /private/tmp/runes-mapping-tests && /private/tmp/runes-mapping-tests
 ```
 
 Builds and policy checks pass (Xcode 27.2, iOS 26 target). Hardware behaviour, onboarding with a real band, and locked-phone reconnection are **not yet verified on a device**. `generate_project.py` predates resources and Xcode's reformatting; edit the checked-in project instead.

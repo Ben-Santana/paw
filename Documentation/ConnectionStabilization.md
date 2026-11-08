@@ -29,13 +29,13 @@ Acceptance: mark each case pass/fail/not checked and attach sanitized journals. 
 
 ## Isolated checks
 
-Mac: `npm run test:python`; `npm run build`; run `node scripts/connection-stability-smoke.mjs` and `node scripts/startup-smoke.mjs` against a Vite preview. Optional `PREVIEW_URL` selects an isolated port; screenshots default to `/private/tmp/neural-connection-ui`. These UI tests use mocked bridge messages.
+Mac: `npm run test:python`; `npm run build`; run `node scripts/connection-stability-smoke.mjs` and `node scripts/startup-smoke.mjs` against a Vite preview. Optional `PREVIEW_URL` selects an isolated port; screenshots default to `/private/tmp/runes-connection-ui`. These UI tests use mocked bridge messages.
 
 iPhone policy checks, from this project folder:
 
 ```sh
-swiftc -module-cache-path /private/tmp/neural-swift-module-cache NeuralIOS/Session/Models.swift NeuralIOS/Protocol/Wire.swift NeuralIOS/Persistence/IdentityStore.swift Tools/ConnectionPolicyTests.swift -o /private/tmp/neural-connection-policy-tests
-/private/tmp/neural-connection-policy-tests
+swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift RunesIOS/Persistence/IdentityStore.swift Tools/ConnectionPolicyTests.swift -o /private/tmp/runes-connection-policy-tests
+/private/tmp/runes-connection-policy-tests
 ```
 
 These compile production selection/error/retry/binding logic with generated ephemeral keys and a temporary preferences suite. They do not query Keychain, initialize Bluetooth or contact Meta. Build the iOS app separately to verify integration.

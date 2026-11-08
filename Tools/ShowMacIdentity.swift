@@ -13,7 +13,7 @@ struct SavedIdentity: Decodable {
     let allow_missing_band_key: Bool?
 }
 struct Transfer: Encodable {
-    let type = "neural-band-identity"
+    let type = "runes-band-identity"
     let version = 2
     let privateKey: Data
     let bandPoint: Data?

@@ -41,7 +41,7 @@ struct ConnectionPolicyTests {
             precondition(ConnectionRetryPolicy.delay(for: bondError, retries: retries) == nil)
         }
         precondition(ConnectionRetryPolicy.delay(for: .transport("lost"), retries: 5) == nil)
-        let suite = "neural-isolated-policy-" + UUID().uuidString
+        let suite = "runes-isolated-policy-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = IdentityStore(preferences: defaults)

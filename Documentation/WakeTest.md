@@ -1,5 +1,7 @@
 # Locked-phone wake test
 
+> **Retired harness (2026-11-08).** The Mac relay probe and its timed-run tools were replaced by the real link in the Mac app; see [MacLink.md](MacLink.md). The results below stand. To rerun these steps, check out the `Tools/` folder from the baseline commit.
+
 This test decides who holds the band connection. The band streams only over L2CAP, and Apple says L2CAP won't wake a suspended app the way a GATT notification does. The test checks whether a heartbeat from the Mac keeps gestures flowing while the iPhone is locked.
 
 It takes about half a day, mostly waiting. Passing compiled builds proves nothing here; only these hardware runs count.
@@ -12,8 +14,8 @@ The app now subscribes automatically every time the band's data channel opens. I
 
 ## Set up once
 
-1. Install a signed **Release** build of NeuralIOS on the iPhone. In the scheme, uncheck **Debug executable**, then stop Xcode and unplug the phone. A debugger keeps the app from suspending, so a run with one attached is invalid.
-2. Run `sh Tools/build-mac-relay-probe.sh` and open `/private/tmp/NeuralRelayProbe.app`. Allow Bluetooth.
+1. Install a signed **Release** build of RunesIOS on the iPhone. In the scheme, uncheck **Debug executable**, then stop Xcode and unplug the phone. A debugger keeps the app from suspending, so a run with one attached is invalid.
+2. Run `sh Tools/build-mac-relay-probe.sh` and open `/private/tmp/RunesRelayProbe.app`. Allow Bluetooth.
 3. On iPhone, tap **Pair Mac BLE test receiver** and scan the QR. iOS should now show a Bluetooth pairing request; accept it, and note any prompt on the Mac too.
 4. Connect the band on iPhone with its saved identity, with no direct Mac session running.
 5. Confirm the Mac shows **Receiving from iPhone** and that a gesture raises the counter.
@@ -37,7 +39,7 @@ For each run:
 3. Wear the band. Each time the Mac chimes, at 1, 5, 15, 30 and 60 minutes, do one clear index tap.
 4. When the run ends, record the phone's battery level.
 
-The Mac stays awake during a run. For a quick rehearsal, launch the probe from Terminal with `NEURAL_WAKE_SCHEDULE="0.5,1"`, which sets the prompts in minutes. Skip run A's remaining prompts if it has clearly failed.
+The Mac stays awake during a run. For a quick rehearsal, launch the probe from Terminal with `RUNES_WAKE_SCHEDULE="0.5,1"`, which sets the prompts in minutes. Skip run A's remaining prompts if it has clearly failed.
 
 ## Other checks
 
@@ -46,11 +48,11 @@ Use the best heartbeat from the timed runs:
 - **Mac sleep:** close the lid for 5 minutes with the iPhone locked, then open it. Look for `relink_after_mac_wake` in the log, then try a gesture.
 - **Walk away:** leave the band and phone apart from the Mac for 5 minutes with the iPhone locked, then return and try a gesture.
 - **Mac identifier:** quit and reopen the probe twice, and reboot the Mac once. Look for `stable=true` in the phone journal.
-- **Heavy phone use:** open a few large apps, lock the phone, and repeat one 15-minute prompt. This pushes iOS to terminate Neural.
+- **Heavy phone use:** open a few large apps, lock the phone, and repeat one 15-minute prompt. This pushes iOS to terminate Runes.
 
 ## Bring back
 
-- The CSV files from `~/Library/Logs/NeuralWakeTest` (use **Show log**).
+- The CSV files from `~/Library/Logs/RunesWakeTest` (use **Show log**).
 - The iPhone journal from **Diagnostics → Export event journal**. It holds gesture data and device identifiers, so share it only as you'd share personal data.
 - Battery start and end levels for each run.
 - Any pairing prompts you saw, and any time you had to touch the phone.

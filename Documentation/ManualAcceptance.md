@@ -4,7 +4,7 @@ Use the same band and record phone model, iOS version, band firmware if availabl
 
 ## 1. Phone connection
 
-- Close other band clients, start Neural, allow Bluetooth, scan, and explicitly select the band.
+- Close other band clients, start Runes, allow Bluetooth, scan, and explicitly select the band.
 - Enroll using phone Meta sign-in and accept system pairing. Confirm subscription reaches **Streaming** rather than merely reporting a peripheral connection.
 - Disconnect and reconnect using the saved phone identity, without Meta login.
 - Quit normally/relaunch and confirm saved connection intent behavior. Explicit Disconnect must remain disconnected after relaunch.
@@ -38,7 +38,7 @@ Repeat the intervals with the Live Activity active, then with it dismissed. Stat
 - Cancel the system pairing prompt and Meta sign-in. Cancel while login is preparing and while the login sheet is visible.
 - Use Disconnect during connect/reconnect; verify it cancels future connection attempts.
 - Interrupt enrollment before completion, then explicitly retry sign-in. Pending host identity should be retained; a finish with a persisted band key can first be retried with Connect.
-- Re-enroll from another client to invalidate this phone's identity; verify Neural asks for user recovery instead of silently enrolling again.
+- Re-enroll from another client to invalidate this phone's identity; verify Runes asks for user recovery instead of silently enrolling again.
 - Where iOS provides state restoration after system termination, inspect restoration and new authentication events. User force-quit is a separate unsupported guarantee and must not be used as the sole restoration test.
 
 ## 5. Diagnostics and privacy
