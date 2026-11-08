@@ -18,6 +18,10 @@ struct SessionSnapshot: Sendable {
     var battery: Int?
     var hand: Handedness?
     var bluetoothReady = false
+    /// The latest physical gesture, one per tap, double tap, hold or swipe.
+    var lastGesture: BandGesture?
+    /// Physical gestures this session. A double tap upgrades the tap before it, so it is not counted twice.
+    var gestureTotal = 0
     /// True once a usable identity exists for the selected band.
     var isSetUp: Bool { selected != nil && identityChoices.contains { $0.eligible && !$0.pending } }
 }
@@ -172,5 +176,122 @@ extension ConnectionRetryPolicy {
     static let ceiling: TimeInterval = 20
     static func backoff(failures: Int) -> TimeInterval {
         delay(for: .transport("retry"), retries: max(0, failures - 1)).map { min($0, ceiling) } ?? ceiling
+    }
+}
+
+
+// MARK: Physical gestures
+
+enum SwipeDirection: String, Sendable, CaseIterable { case up, down, left, right }
+
+/// One thing the person did with their hand. The band describes each of these with
+/// several packets (a tap is press, button press, release, button release and single tap);
+/// the interface reacts to this instead, exactly once.
+struct BandGesture: Equatable, Sendable, Identifiable {
+    enum Kind: Equatable, Sendable { case tap, doubleTap, holdBegan, holdEnded, swipe(SwipeDirection) }
+    /// Increases with every reaction, so views can tell two identical gestures apart.
+    let id: Int
+    let kind: Kind
+    let finger: UInt64
+    let at: Date
+    /// A double tap upgrades the single tap the interface already showed.
+    var upgradesPrevious: Bool { kind == .doubleTap }
+    /// The end of a hold finishes a gesture that already reacted.
+    var isNewGesture: Bool { kind != .holdEnded && kind != .doubleTap }
+
+    var fingerName: String {
+        switch finger { case 1: return "Thumb"; case 2: return "Index"; case 3: return "Middle"; default: return "Band" }
+    }
+    var title: String {
+        switch kind {
+        case .tap: return "\(fingerName) tap"
+        case .doubleTap: return "\(fingerName) double tap"
+        case .holdBegan, .holdEnded: return "\(fingerName) hold"
+        case .swipe(let direction): return "Swipe \(direction.rawValue)"
+        }
+    }
+}
+
+/// Turns the band's packet stream into physical gestures.
+///
+/// From the 2026-11-08 journal (971 bursts): the derived layer carries the meaning
+/// (singleTap, doubleTap, buttonHold, buttonHoldRelease, buttonUp/Down/Left/Right); raw
+/// press/release and derived buttonPress/buttonRelease are parts of those and never react.
+/// The second tap of a double tap sends singleTap and then doubleTap within ~11 ms, so a
+/// single tap waits `settle` before it counts, and a doubleTap inside that wait replaces it.
+struct GestureInterpreter: Sendable {
+    static let settle: TimeInterval = 0.04
+    private var pendingTap: (finger: UInt64, at: Date, uptime: TimeInterval)?
+    /// A raw-layer gesture waiting to see whether the derived layer describes it instead.
+    private var pendingRaw: (kind: BandGesture.Kind, finger: UInt64, at: Date, uptime: TimeInterval)?
+    private var lastDerivedSequence: UInt64?
+    private var derivedSeen = false
+    private var holding: UInt64?
+    private var serial = 0
+
+    var hasPending: Bool { pendingTap != nil || pendingRaw != nil }
+
+    mutating func reset() { pendingTap = nil; pendingRaw = nil; lastDerivedSequence = nil; holding = nil }
+
+    mutating func feed(_ event: GestureEvent) -> [BandGesture] {
+        let now = event.received.uptime, at = event.received.wallTime
+        if event.stream == .derived {
+            derivedSeen = true; pendingRaw = nil
+            if event.sequence == lastDerivedSequence { return [] }   // repeated delivery
+            lastDerivedSequence = event.sequence
+            let code = event.derivedActionCode, finger = event.fingerCode
+            if code == 2 {
+                // Double tap: drop the second tap's single tap if it is still waiting.
+                pendingTap = nil
+                return [make(.doubleTap, finger, at)]
+            }
+            var out = flush(now: .infinity)
+            switch code {
+            case 1: pendingTap = (finger, at, now)
+            case 3: holding = finger; out.append(make(.holdBegan, finger, at))
+            case 10: holding = nil; out.append(make(.holdEnded, finger, at))
+            case 5: out.append(make(.swipe(.up), finger, at))
+            case 6: out.append(make(.swipe(.down), finger, at))
+            case 7: out.append(make(.swipe(.left), finger, at))
+            case 8: out.append(make(.swipe(.right), finger, at))
+            default: break   // buttonPress, buttonRelease: parts of a gesture
+            }
+            return out
+        }
+        // Raw packets only stand in when the band sends no derived layer. They wait `settle`
+        // first, because the derived packet for the same gesture follows within microseconds.
+        guard !derivedSeen else { return [] }
+        let kind: BandGesture.Kind
+        switch event.actionCode {
+        case 3, 5: kind = .tap
+        case 4: kind = .doubleTap
+        case 6: kind = .swipe(.up)
+        case 7: kind = .swipe(.down)
+        case 8, 11: kind = .swipe(.left)
+        case 9, 12: kind = .swipe(.right)
+        default: return []
+        }
+        let out = flush(now: .infinity)
+        pendingRaw = (kind, event.fingerCode, at, now)
+        return out
+    }
+
+    /// Releases a waiting single tap once `settle` has passed.
+    mutating func flush(now: TimeInterval) -> [BandGesture] {
+        var out: [BandGesture] = []
+        if let raw = pendingRaw, now - raw.uptime >= Self.settle {
+            pendingRaw = nil
+            if !derivedSeen { out.append(make(raw.kind, raw.finger, raw.at)) }
+        }
+        if let tap = pendingTap, now - tap.uptime >= Self.settle {
+            pendingTap = nil
+            out.append(make(.tap, tap.finger, tap.at))
+        }
+        return out
+    }
+
+    private mutating func make(_ kind: BandGesture.Kind, _ finger: UInt64, _ at: Date) -> BandGesture {
+        serial += 1
+        return BandGesture(id: serial, kind: kind, finger: finger, at: at)
     }
 }

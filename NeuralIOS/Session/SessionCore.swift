@@ -13,6 +13,9 @@ final class SessionCore: @unchecked Sendable {
     private var pendingStreams: RelayWire.Demand?
     private var activeStreams: RelayWire.Demand?
     var onGesture: ((GestureEvent) -> Void)?
+    /// One call per physical gesture (plus the end of a hold); drives haptics and animation.
+    var onBandGesture: ((BandGesture) -> Void)?
+    private var interpreter = GestureInterpreter()
     var onOwnership: ((OwnershipStep, MetaSession, UUID) -> Void)?
     /// Asks the app to hold background execution while a timed retry is waiting.
     var onRetryWait: ((Bool) -> Void)?
@@ -91,7 +94,7 @@ final class SessionCore: @unchecked Sendable {
         transport.onTick = { [weak self] in self?.tick() }
         transport.onRestore = { [weak self] id in
             guard let self else { return }
-            self.proto = nil; self.sequences.reset(); self.sessionID = UUID(); self.snapshot.selected = id
+            self.proto = nil; self.sequences.reset(); self.interpreter.reset(); self.sessionID = UUID(); self.snapshot.selected = id
             self.pendingStreams = nil; self.activeStreams = nil
             self.record("restoration", "Restored peripheral; a new authenticated channel is required.")
             self.transition(.connecting, "Restoring band connection.")
@@ -220,7 +223,7 @@ final class SessionCore: @unchecked Sendable {
     }
     private func beginConnection() {
         guard snapshot.wantsConnection, let id = snapshot.selected else { return }
-        proto = nil; sequences.reset(); sessionID = UUID(); handRequested = false
+        proto = nil; sequences.reset(); interpreter.reset(); sessionID = UUID(); handRequested = false
         pendingStreams = nil; activeStreams = nil
         guard available else { transition(.reconnecting, "Waiting for Bluetooth to become available."); return }
         transition(enrollment == nil ? .connecting : .enrolling, enrollment == nil ? "Connecting to your band." : "Enrolling this phone with the band.")
@@ -367,8 +370,26 @@ final class SessionCore: @unchecked Sendable {
             record("gesture", event: event, receipt: receipt)
             snapshot.eventCount += 1; snapshot.events.insert(event, at: 0)
             if snapshot.events.count > 200 { snapshot.events.removeLast(snapshot.events.count - 200) }
-            onGesture?(event); publish()
+            onGesture?(event)
+            react(interpreter.feed(event))
+            if interpreter.hasPending {
+                transport.perform(after: GestureInterpreter.settle + 0.005) { [weak self] in
+                    guard let self else { return }
+                    self.react(self.interpreter.flush(now: ProcessInfo.processInfo.systemUptime))
+                }
+            }
+            publish()
         }
+    }
+    private func react(_ gestures: [BandGesture]) {
+        guard !gestures.isEmpty else { return }
+        for gesture in gestures {
+            if gesture.isNewGesture { snapshot.gestureTotal += 1 }
+            snapshot.lastGesture = gesture
+            record("band_gesture", gesture.title)
+            onBandGesture?(gesture)
+        }
+        publish()
     }
     func ownershipCompleted(_ result: Result<PairCompletion, Error>, attempt: UUID) {
         guard attempt == enrollmentAttempt else { return }
@@ -407,6 +428,7 @@ final class SessionCore: @unchecked Sendable {
             guard let self else { return }
             self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; self.snapshot.hand = nil
             self.snapshot.issue = nil; self.snapshot.events = []; self.snapshot.eventCount = 0
+            self.snapshot.lastGesture = nil; self.snapshot.gestureTotal = 0
             for key in ["selectedBand", "bandHand", "handReadAttempts"] { UserDefaults.standard.removeObject(forKey: key) }
             self.record("connection", "Band forgotten on this phone; credentials retained.")
             self.transition(.disconnected, "Band forgotten.")
@@ -436,7 +458,7 @@ final class SessionCore: @unchecked Sendable {
     /// pending connect in place (or iOS is reconnecting by itself), so nothing here
     /// depends on a timer that a suspended app could not run.
     private func linkLost(_ systemReconnecting: Bool) {
-        proto = nil; sequences.reset(); sessionID = UUID(); handRequested = false
+        proto = nil; sequences.reset(); interpreter.reset(); sessionID = UUID(); handRequested = false
         pendingStreams = nil; activeStreams = nil; snapshot.startedAt = nil
         if stoppingUntil != nil || snapshot.state == .disconnecting { finishDisconnect(); return }
         guard snapshot.wantsConnection, enrollment == nil else {

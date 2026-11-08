@@ -40,6 +40,8 @@ struct SnapshotGallery: View {
             HomeView(status: home.1)
         } else if let step = PreviewFixtures.onboarding.first(where: { "onboarding-\($0.0)" == name }) {
             OnboardingView(step: step.1, context: step.2)
+        } else if name == "ring-lab" || name == "ring-demo" {
+            RingLab(autoplay: name == "ring-demo")
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, hand: .left, version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "advanced" {

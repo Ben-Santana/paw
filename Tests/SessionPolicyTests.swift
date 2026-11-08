@@ -65,6 +65,52 @@ struct SessionPolicyTests {
         precondition(streaming.phase == .connected && streaming.issue == .pulseMissing, "Pulse warning is gentle")
         precondition(streaming.macLink == "Connected to Ben’s MacBook")
 
-        print("Session policy checks passed: per-stream gesture sequences, unlimited reconnect for ordinary errors, plain interface wording, status mapping.")
+        // 5. One reaction per physical gesture, from the patterns in the 2026-11-08 journal.
+        var clock = 100.0, rawSeq: UInt64 = 0, derivedSeq: UInt64 = 0
+        func packet(_ finger: UInt64, raw: UInt64 = 0, derived: UInt64 = 0, after gap: Double = 0.0001) -> GestureEvent {
+            clock += gap
+            let sequence: UInt64
+            if raw != 0 { rawSeq += 1; sequence = rawSeq } else { derivedSeq += 1; sequence = derivedSeq }
+            return GestureEvent(id: UUID(), sessionID: UUID(), fingerCode: finger, actionCode: raw, derivedActionCode: derived,
+                                synthetic: false, sequence: sequence, deviceTimestamp: UInt64(clock * 1_000_000),
+                                received: ReceiptContext(wallTime: Date(), uptime: clock, applicationState: "foreground"))
+        }
+        func tapPackets(_ finger: UInt64, double: Bool = false) -> [GestureEvent] {
+            var out = [packet(finger, raw: 1, after: 0.3), packet(finger, derived: 9), packet(finger, raw: 2, after: 0.12),
+                       packet(finger, derived: 4), packet(finger, derived: 1)]
+            if double { out.append(packet(finger, derived: 2, after: 0.004)) }
+            return out
+        }
+        func run(_ packets: [GestureEvent]) -> [BandGesture] {
+            var interpreter = GestureInterpreter(), out: [BandGesture] = []
+            for event in packets {
+                out += interpreter.flush(now: event.received.uptime)
+                out += interpreter.feed(event)
+            }
+            return out + interpreter.flush(now: .infinity)
+        }
+        let tap = run(tapPackets(2))
+        precondition(tap.map(\.kind) == [.tap], "Five tap packets make one tap: \(tap.map(\.kind))")
+        let double = run(tapPackets(2) + tapPackets(2, double: true))
+        precondition(double.map(\.kind) == [.tap, .doubleTap], "A double tap is the first tap, then one upgrade: \(double.map(\.kind))")
+        precondition(double.filter(\.isNewGesture).count == 1, "A double tap counts as one gesture")
+        let hold = run([packet(2, raw: 1, after: 0.3), packet(2, derived: 9), packet(2, derived: 3, after: 0.31),
+                        packet(2, raw: 2, after: 1.2), packet(2, derived: 4), packet(2, derived: 10)])
+        precondition(hold.map(\.kind) == [.holdBegan, .holdEnded], "A hold reacts at its start and ends once: \(hold.map(\.kind))")
+        precondition(hold.filter(\.isNewGesture).count == 1)
+        for (raw, derived, direction) in [(UInt64(9), UInt64(8), SwipeDirection.right), (8, 7, .left), (6, 5, .up), (7, 6, .down)] {
+            let swipe = run([packet(1, raw: raw, after: 0.5), packet(1, derived: derived)])
+            precondition(swipe.map(\.kind) == [.swipe(direction)], "Swipe \(direction) is one gesture")
+        }
+        let mixed = run(tapPackets(2) + tapPackets(3) + [packet(1, raw: 9, after: 0.5), packet(1, derived: 8)])
+        precondition(mixed.map(\.title) == ["Index tap", "Middle tap", "Swipe right"])
+        var repeated = GestureInterpreter()
+        let swipePacket = packet(1, derived: 8, after: 0.5)
+        precondition(repeated.feed(swipePacket).count == 1 && repeated.feed(swipePacket).isEmpty, "A repeated packet does not react twice")
+        var rawOnly = GestureInterpreter()
+        precondition(rawOnly.feed(packet(2, raw: 3, after: 0.5)).isEmpty && rawOnly.hasPending)
+        precondition(rawOnly.flush(now: clock + 0.05).map(\.kind) == [.tap], "Raw-only bands still react, after the settle")
+
+        print("Session policy checks passed: per-stream gesture sequences, unlimited reconnect for ordinary errors, plain interface wording, status mapping, one reaction per physical gesture.")
     }
 }

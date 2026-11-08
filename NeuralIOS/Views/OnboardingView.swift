@@ -17,13 +17,13 @@ struct OnboardingContext: Equatable {
     var workingText = "Linking your band…"
     var issue: SessionIssue?
     var phase: BandPhase = .notSetUp
-    var pulse = 0
+    var gesture: BandGesture?
     var heard: String?
     var testPassed = false
 
     static func == (a: Self, b: Self) -> Bool {
         a.bluetooth == b.bluetooth && a.devices.map(\.id) == b.devices.map(\.id) && a.searching == b.searching
-            && a.working == b.working && a.issue == b.issue && a.phase == b.phase && a.pulse == b.pulse
+            && a.working == b.working && a.issue == b.issue && a.phase == b.phase && a.gesture?.id == b.gesture?.id
             && a.heard == b.heard && a.testPassed == b.testPassed && a.systemPicker == b.systemPicker
     }
 }
@@ -52,7 +52,7 @@ struct OnboardingView: View {
             topBar
             ScrollView {
                 VStack(spacing: 0) {
-                    HairlineRing(phase: ringPhase, pulse: context.pulse, emphasis: emphasis)
+                    HairlineRing(phase: ringPhase, gesture: context.gesture, emphasis: emphasis)
                         .frame(maxWidth: 300).padding(.top, 8).padding(.bottom, 12)
                     VStack(alignment: .leading, spacing: 10) {
                         Text(title).font(.display).tracking(-0.6).fixedSize(horizontal: false, vertical: true)
@@ -267,7 +267,7 @@ struct OnboardingFlow: View {
     @State private var step: OnboardingStep = .welcome
     @State private var heard: String?
     @State private var passed = false
-    @State private var testStartCount = 0
+    @State private var testStartID = 0
     @State private var scanningMac = false
 
     private var snapshot: SessionSnapshot { controller.snapshot }
@@ -280,7 +280,7 @@ struct OnboardingFlow: View {
             .onChange(of: snapshot.state) { _, state in
                 if step == .signIn, state == .streaming { startTest() }
             }
-            .onChange(of: snapshot.eventCount) { _, _ in listen() }
+            .onChange(of: snapshot.lastGesture?.id) { _, _ in listen() }
             .sheet(isPresented: $scanningMac) {
                 IdentityScanner(title: "Scan the code on your Mac") { text in
                     if let id = snapshot.selected { controller.importIdentityQR(text, for: id) }
@@ -299,7 +299,7 @@ struct OnboardingFlow: View {
             workingText: controller.isSigningIn ? "Waiting for Meta sign-in…" : "Linking your band…",
             issue: step == .signIn && controller.uiError != nil ? .signInFailed : snapshot.issue,
             phase: BandStatus(snapshot, setupComplete: true, relayStatus: nil).phase,
-            pulse: snapshot.eventCount, heard: heard, testPassed: passed)
+            gesture: snapshot.lastGesture, heard: heard, testPassed: passed)
     }
 
     private var actions: OnboardingActions {
@@ -366,12 +366,12 @@ struct OnboardingFlow: View {
     }
 
     private func startTest() {
-        testStartCount = snapshot.eventCount; heard = nil; passed = false
+        testStartID = snapshot.lastGesture?.id ?? 0; heard = nil; passed = false
         step = .test
     }
 
     private func listen() {
-        guard step == .test, !passed, snapshot.eventCount > testStartCount, let event = snapshot.events.first else { return }
-        if event.isIndexFinger { passed = true } else { heard = event.plainTitle }
+        guard step == .test, !passed, let gesture = snapshot.lastGesture, gesture.id > testStartID, gesture.kind != .holdEnded else { return }
+        if gesture.finger == 2, gesture.kind == .tap || gesture.kind == .doubleTap { passed = true } else { heard = gesture.title }
     }
 }

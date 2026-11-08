@@ -26,7 +26,9 @@ final class SessionController: ObservableObject {
     private var foreground = false
     private var bluetoothStarted = false
     private var retryTask: UIBackgroundTaskIdentifier = .invalid
-    private let haptics = UIImpactFeedbackGenerator(style: .light)
+    private let tapHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let holdHaptic = UIImpactFeedbackGenerator(style: .medium)
+    private let swipeHaptic = UIImpactFeedbackGenerator(style: .soft)
 
     private init() {
         let stream = AsyncStream<GestureEvent>.makeStream(bufferingPolicy: .bufferingNewest(200))
@@ -39,7 +41,8 @@ final class SessionController: ObservableObject {
         setupComplete = defaults.bool(forKey: Preferences.setupComplete)
         core = SessionCore()
         core.onSnapshot = { [weak self] state in Task { @MainActor in self?.apply(state) } }
-        core.onGesture = { [weak self] event in Task { @MainActor in self?.gestureArrived(event) } }
+        core.onGesture = { [weak self] event in Task { @MainActor in self?.eventContinuation.yield(event) } }
+        core.onBandGesture = { [weak self] gesture in Task { @MainActor in self?.react(to: gesture) } }
         core.onOwnership = { [weak self] step, session, attempt in Task { @MainActor in self?.performOwnership(step, session: session, attempt: attempt) } }
         core.onRetryWait = { [weak self] waiting in Task { @MainActor in self?.holdExecution(waiting) } }
         let session = core
@@ -83,9 +86,15 @@ final class SessionController: ObservableObject {
         }
         if let level = state.battery, level != previousBattery { BatteryAlerts.observe(level) }
     }
-    private func gestureArrived(_ event: GestureEvent) {
-        eventContinuation.yield(event)
-        if foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true { haptics.impactOccurred() }
+    /// One haptic per physical gesture; the end of a hold is silent.
+    private func react(to gesture: BandGesture) {
+        guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
+        switch gesture.kind {
+        case .tap, .doubleTap: tapHaptic.impactOccurred()
+        case .holdBegan: holdHaptic.impactOccurred()
+        case .swipe: swipeHaptic.impactOccurred(intensity: 0.8)
+        case .holdEnded: break
+        }
     }
     /// A timed retry must be able to fire even if iOS would otherwise suspend the app.
     private func holdExecution(_ waiting: Bool) {

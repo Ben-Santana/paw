@@ -98,6 +98,10 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         worker.name = "Neural band session"; worker.qualityOfService = .userInitiated; worker.start(); ready.wait()
     }
     func perform(_ work: @escaping () -> Void) { CFRunLoopPerformBlock(loop, CFRunLoopMode.defaultMode.rawValue, work); CFRunLoopWakeUp(loop) }
+    /// Runs `work` on the session run loop after `delay` seconds.
+    func perform(after delay: TimeInterval, _ work: @escaping () -> Void) {
+        perform { Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in work() } }
+    }
     func start(selected: UUID?, desired: Bool) {
         perform { [self] in
             target = selected; self.desired = desired

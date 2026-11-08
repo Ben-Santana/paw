@@ -25,7 +25,10 @@ struct BandStatus: Equatable, Sendable {
     var hand: Handedness?
     var lastGesture: String?
     var lastGestureAt: Date?
+    /// Physical gestures, not packets.
     var gestureCount = 0
+    /// The latest gesture, for the ring's reaction.
+    var gesture: BandGesture?
     var macLink: String?
 
     var detail: String {
@@ -50,9 +53,9 @@ extension BandStatus {
         else if snapshot.state == .streaming { phase = .connected }
         else if snapshot.wantsConnection { phase = .connecting }
         else { phase = .paused }
-        let last = snapshot.events.first
+        let last = snapshot.lastGesture
         self.init(phase: phase, issue: issue, battery: snapshot.battery, hand: snapshot.hand,
-                  lastGesture: last?.plainTitle, lastGestureAt: last?.received.wallTime,
-                  gestureCount: snapshot.eventCount, macLink: relayStatus)
+                  lastGesture: last?.title, lastGestureAt: last?.at,
+                  gestureCount: snapshot.gestureTotal, gesture: last, macLink: relayStatus)
     }
 }
