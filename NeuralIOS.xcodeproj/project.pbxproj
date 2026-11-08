@@ -1,0 +1,464 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5D276E835024571823A2F0EF /* NeuralIOS/Relay/RelayWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19345B9DDAE30E0F4A2AC4A1; };
+		FDFF13C853120707036BB5A9 /* NeuralIOS/Relay/RelayKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBFD86D0F67F97FE9E197419; };
+		463FE6A3ED90F3237D94ED16 /* NeuralIOS/Relay/PhoneRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAA4992BA83E799DC592C33A; };
+		02375D4F9CD91F46663AB017 /* NeuralIOS/Protocol/Wire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E53ED06D0A259D8E432C474 /* NeuralIOS/Protocol/Wire.swift */; };
+		2A34AB965398FDEC764A089D /* NeuralIOS/Persistence/IdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5DBCD62CC69D43775D8B1D /* NeuralIOS/Persistence/IdentityStore.swift */; };
+		3B3FD586F6D0DB65AAED2DA7 /* NeuralIOS/Session/Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93828B13E82B8F70EB3281A /* NeuralIOS/Session/Models.swift */; };
+		5B57DDF397C76D669427C848 /* NeuralIOS/Persistence/EventJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354E327EB145821558825D94 /* NeuralIOS/Persistence/EventJournal.swift */; };
+		5D35644B9AD8BC07BE81AA28 /* NeuralIOS/Protocol/BandCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA24418B7EE4208F0840A990 /* NeuralIOS/Protocol/BandCrypto.swift */; };
+		6A68B747D0104746C62345A7 /* NeuralIOS/Views/IdentityScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F1142DC55DFBFB9AFF01A4 /* NeuralIOS/Views/IdentityScanner.swift */; };
+		7597A0DB2E42EE36109916F8 /* NeuralIOS/Authentication/MetaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D85D11F98372322D5E8E16 /* NeuralIOS/Authentication/MetaService.swift */; };
+		825B86C761149A6ECD80A528 /* NeuralActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = CC7DB7C43F6197D664FA42C3 /* NeuralActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		8369A4451800061EBDFBB3EE /* NeuralIOS/Session/LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E576DA96871B16AD36488107 /* NeuralIOS/Session/LiveActivityController.swift */; };
+		8503029E44FB9C93B0EA1582 /* NeuralIOS/Views/ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E83A705B33266FDCF521E3E /* NeuralIOS/Views/ContentView.swift */; };
+		86B1387FD3AE9E541BE2402F /* NeuralIOS/Protocol/BandProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBEA3B6FF508B97C2848D55A /* NeuralIOS/Protocol/BandProtocol.swift */; };
+		9CE4AB7D271A2EBCD698EF68 /* NeuralActivity/NeuralActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 191ED0C690C1A701E32FED9D /* NeuralActivity/NeuralActivity.swift */; };
+		ABAEF30966B3A26D06E7127F /* NeuralIOS/Authentication/IdentityTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388448C3ABD155B2F3628BFA /* NeuralIOS/Authentication/IdentityTransfer.swift */; };
+		AC02B0150CC541C94A41DBF9 /* NeuralIOS/Session/SessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A764CDA6A50E01E074D5A1A7 /* NeuralIOS/Session/SessionController.swift */; };
+		BA0A5AF07C25D9ECF8C684B4 /* NeuralIOS/NeuralIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B6186D9428EC99CA179729D /* NeuralIOS/NeuralIOSApp.swift */; };
+		BF3C1742E0B4F884590484AB /* NeuralIOS/Authentication/OwnershipCeremony.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B99FC3095980D6FF31335E8 /* NeuralIOS/Authentication/OwnershipCeremony.swift */; };
+		DBAB4D04AE08E963AFD45929 /* Shared/BandActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 271DADF1B90FD35F8C656485 /* Shared/BandActivityAttributes.swift */; };
+		DDC9D0E16F30649CF5570DD4 /* NeuralIOS/Transport/BandTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CFA8A55CC6627CA78B7F404 /* NeuralIOS/Transport/BandTransport.swift */; };
+		E1FFAC1C612FCDEA994A47B8 /* NeuralIOS/Session/SessionCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8010C851434051877B931AA /* NeuralIOS/Session/SessionCore.swift */; };
+		F405D648B08E79CFD3B90757 /* Shared/BandActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 271DADF1B90FD35F8C656485 /* Shared/BandActivityAttributes.swift */; };
+		FA7335D6096E2DB2F5FEBEEE /* NeuralIOS/Authentication/MetaLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E95F4155BD6265C7E8724EE7 /* NeuralIOS/Authentication/MetaLoginView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1241936D4DD3AAD68FE7BFBD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 244210E48437B6556980A702 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB318F37037900E173273CA2;
+			remoteInfo = NeuralActivity;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		8A1EED22144C3F04485A69EE /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				825B86C761149A6ECD80A528 /* NeuralActivity.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		19345B9DDAE30E0F4A2AC4A1 /* NeuralIOS/Relay/RelayWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NeuralIOS/Relay/RelayWire.swift"; sourceTree = SOURCE_ROOT; };
+		FBFD86D0F67F97FE9E197419 /* NeuralIOS/Relay/RelayKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NeuralIOS/Relay/RelayKeyStore.swift"; sourceTree = SOURCE_ROOT; };
+		FAA4992BA83E799DC592C33A /* NeuralIOS/Relay/PhoneRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NeuralIOS/Relay/PhoneRelay.swift"; sourceTree = SOURCE_ROOT; };
+		0B99FC3095980D6FF31335E8 /* NeuralIOS/Authentication/OwnershipCeremony.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Authentication/OwnershipCeremony.swift; sourceTree = SOURCE_ROOT; };
+		191ED0C690C1A701E32FED9D /* NeuralActivity/NeuralActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralActivity/NeuralActivity.swift; sourceTree = SOURCE_ROOT; };
+		1E83A705B33266FDCF521E3E /* NeuralIOS/Views/ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Views/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		271DADF1B90FD35F8C656485 /* Shared/BandActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/BandActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
+		2F5DBCD62CC69D43775D8B1D /* NeuralIOS/Persistence/IdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Persistence/IdentityStore.swift; sourceTree = SOURCE_ROOT; };
+		312971FDBDCFD7E319BDC505 /* NeuralIOS/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NeuralIOS/Info.plist; sourceTree = SOURCE_ROOT; };
+		354E327EB145821558825D94 /* NeuralIOS/Persistence/EventJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Persistence/EventJournal.swift; sourceTree = SOURCE_ROOT; };
+		388448C3ABD155B2F3628BFA /* NeuralIOS/Authentication/IdentityTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Authentication/IdentityTransfer.swift; sourceTree = SOURCE_ROOT; };
+		4CFA8A55CC6627CA78B7F404 /* NeuralIOS/Transport/BandTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Transport/BandTransport.swift; sourceTree = SOURCE_ROOT; };
+		650669A7EF6B9AA0FAEEE900 /* NeuralActivity/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NeuralActivity/Info.plist; sourceTree = SOURCE_ROOT; };
+		8A677C6962E0A9A479527735 /* NeuralIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NeuralIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8B6186D9428EC99CA179729D /* NeuralIOS/NeuralIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/NeuralIOSApp.swift; sourceTree = SOURCE_ROOT; };
+		96D85D11F98372322D5E8E16 /* NeuralIOS/Authentication/MetaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Authentication/MetaService.swift; sourceTree = SOURCE_ROOT; };
+		9E53ED06D0A259D8E432C474 /* NeuralIOS/Protocol/Wire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Protocol/Wire.swift; sourceTree = SOURCE_ROOT; };
+		A764CDA6A50E01E074D5A1A7 /* NeuralIOS/Session/SessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Session/SessionController.swift; sourceTree = SOURCE_ROOT; };
+		C93828B13E82B8F70EB3281A /* NeuralIOS/Session/Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Session/Models.swift; sourceTree = SOURCE_ROOT; };
+		CA24418B7EE4208F0840A990 /* NeuralIOS/Protocol/BandCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Protocol/BandCrypto.swift; sourceTree = SOURCE_ROOT; };
+		CC7DB7C43F6197D664FA42C3 /* NeuralActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NeuralActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D6F1142DC55DFBFB9AFF01A4 /* NeuralIOS/Views/IdentityScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Views/IdentityScanner.swift; sourceTree = SOURCE_ROOT; };
+		D8010C851434051877B931AA /* NeuralIOS/Session/SessionCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Session/SessionCore.swift; sourceTree = SOURCE_ROOT; };
+		E576DA96871B16AD36488107 /* NeuralIOS/Session/LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Session/LiveActivityController.swift; sourceTree = SOURCE_ROOT; };
+		E95F4155BD6265C7E8724EE7 /* NeuralIOS/Authentication/MetaLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Authentication/MetaLoginView.swift; sourceTree = SOURCE_ROOT; };
+		EBEA3B6FF508B97C2848D55A /* NeuralIOS/Protocol/BandProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralIOS/Protocol/BandProtocol.swift; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		23A82178B7823744F3ACBDE0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4F7F537D7E0CA17E4EF374EA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0A3E27B8CA818264D75C8D81 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8A677C6962E0A9A479527735 /* NeuralIOS.app */,
+				CC7DB7C43F6197D664FA42C3 /* NeuralActivity.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		19F479106CE8C3BA8C106518 = {
+			isa = PBXGroup;
+			children = (
+				FAA4992BA83E799DC592C33A /* NeuralIOS/Relay/PhoneRelay.swift */,
+				FBFD86D0F67F97FE9E197419 /* NeuralIOS/Relay/RelayKeyStore.swift */,
+				19345B9DDAE30E0F4A2AC4A1 /* NeuralIOS/Relay/RelayWire.swift */,
+				388448C3ABD155B2F3628BFA /* NeuralIOS/Authentication/IdentityTransfer.swift */,
+				E95F4155BD6265C7E8724EE7 /* NeuralIOS/Authentication/MetaLoginView.swift */,
+				96D85D11F98372322D5E8E16 /* NeuralIOS/Authentication/MetaService.swift */,
+				0B99FC3095980D6FF31335E8 /* NeuralIOS/Authentication/OwnershipCeremony.swift */,
+				8B6186D9428EC99CA179729D /* NeuralIOS/NeuralIOSApp.swift */,
+				354E327EB145821558825D94 /* NeuralIOS/Persistence/EventJournal.swift */,
+				2F5DBCD62CC69D43775D8B1D /* NeuralIOS/Persistence/IdentityStore.swift */,
+				CA24418B7EE4208F0840A990 /* NeuralIOS/Protocol/BandCrypto.swift */,
+				EBEA3B6FF508B97C2848D55A /* NeuralIOS/Protocol/BandProtocol.swift */,
+				9E53ED06D0A259D8E432C474 /* NeuralIOS/Protocol/Wire.swift */,
+				E576DA96871B16AD36488107 /* NeuralIOS/Session/LiveActivityController.swift */,
+				C93828B13E82B8F70EB3281A /* NeuralIOS/Session/Models.swift */,
+				A764CDA6A50E01E074D5A1A7 /* NeuralIOS/Session/SessionController.swift */,
+				D8010C851434051877B931AA /* NeuralIOS/Session/SessionCore.swift */,
+				4CFA8A55CC6627CA78B7F404 /* NeuralIOS/Transport/BandTransport.swift */,
+				1E83A705B33266FDCF521E3E /* NeuralIOS/Views/ContentView.swift */,
+				D6F1142DC55DFBFB9AFF01A4 /* NeuralIOS/Views/IdentityScanner.swift */,
+				271DADF1B90FD35F8C656485 /* Shared/BandActivityAttributes.swift */,
+				191ED0C690C1A701E32FED9D /* NeuralActivity/NeuralActivity.swift */,
+				312971FDBDCFD7E319BDC505 /* NeuralIOS/Info.plist */,
+				650669A7EF6B9AA0FAEEE900 /* NeuralActivity/Info.plist */,
+				0A3E27B8CA818264D75C8D81 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9D0D8F0019B9AC4D4809CB3F /* NeuralIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9CEF0E6D2AB320648633B8E2 /* Build configuration list for PBXNativeTarget "NeuralIOS" */;
+			buildPhases = (
+				A6C7E89B26AB00B5AA0B2C94 /* Sources */,
+				4F7F537D7E0CA17E4EF374EA /* Frameworks */,
+				5C09829914B2815A0C166953 /* Resources */,
+				8A1EED22144C3F04485A69EE /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F26350DAFE3F19AABFD69AC4 /* PBXTargetDependency */,
+			);
+			name = NeuralIOS;
+			productName = NeuralIOS;
+			productReference = 8A677C6962E0A9A479527735 /* NeuralIOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BB318F37037900E173273CA2 /* NeuralActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 61C82B40C940D67F1B37CD2C /* Build configuration list for PBXNativeTarget "NeuralActivity" */;
+			buildPhases = (
+				1E2C5DE66164AE217BE64C9E /* Sources */,
+				23A82178B7823744F3ACBDE0 /* Frameworks */,
+				981510E823D6EC861B1F1337 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NeuralActivity;
+			productName = NeuralActivity;
+			productReference = CC7DB7C43F6197D664FA42C3 /* NeuralActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		244210E48437B6556980A702 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+			};
+			buildConfigurationList = 1E56F87B57F2389817940826 /* Build configuration list for PBXProject "NeuralIOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 19F479106CE8C3BA8C106518;
+			productRefGroup = 0A3E27B8CA818264D75C8D81 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9D0D8F0019B9AC4D4809CB3F /* NeuralIOS */,
+				BB318F37037900E173273CA2 /* NeuralActivity */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5C09829914B2815A0C166953 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		981510E823D6EC861B1F1337 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1E2C5DE66164AE217BE64C9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9CE4AB7D271A2EBCD698EF68 /* NeuralActivity/NeuralActivity.swift in Sources */,
+				DBAB4D04AE08E963AFD45929 /* Shared/BandActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A6C7E89B26AB00B5AA0B2C94 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				463FE6A3ED90F3237D94ED16 /* NeuralIOS/Relay/PhoneRelay.swift in Sources */,
+				FDFF13C853120707036BB5A9 /* NeuralIOS/Relay/RelayKeyStore.swift in Sources */,
+				5D276E835024571823A2F0EF /* NeuralIOS/Relay/RelayWire.swift in Sources */,
+				ABAEF30966B3A26D06E7127F /* NeuralIOS/Authentication/IdentityTransfer.swift in Sources */,
+				FA7335D6096E2DB2F5FEBEEE /* NeuralIOS/Authentication/MetaLoginView.swift in Sources */,
+				7597A0DB2E42EE36109916F8 /* NeuralIOS/Authentication/MetaService.swift in Sources */,
+				BF3C1742E0B4F884590484AB /* NeuralIOS/Authentication/OwnershipCeremony.swift in Sources */,
+				BA0A5AF07C25D9ECF8C684B4 /* NeuralIOS/NeuralIOSApp.swift in Sources */,
+				5B57DDF397C76D669427C848 /* NeuralIOS/Persistence/EventJournal.swift in Sources */,
+				2A34AB965398FDEC764A089D /* NeuralIOS/Persistence/IdentityStore.swift in Sources */,
+				5D35644B9AD8BC07BE81AA28 /* NeuralIOS/Protocol/BandCrypto.swift in Sources */,
+				86B1387FD3AE9E541BE2402F /* NeuralIOS/Protocol/BandProtocol.swift in Sources */,
+				02375D4F9CD91F46663AB017 /* NeuralIOS/Protocol/Wire.swift in Sources */,
+				8369A4451800061EBDFBB3EE /* NeuralIOS/Session/LiveActivityController.swift in Sources */,
+				3B3FD586F6D0DB65AAED2DA7 /* NeuralIOS/Session/Models.swift in Sources */,
+				AC02B0150CC541C94A41DBF9 /* NeuralIOS/Session/SessionController.swift in Sources */,
+				E1FFAC1C612FCDEA994A47B8 /* NeuralIOS/Session/SessionCore.swift in Sources */,
+				DDC9D0E16F30649CF5570DD4 /* NeuralIOS/Transport/BandTransport.swift in Sources */,
+				8503029E44FB9C93B0EA1582 /* NeuralIOS/Views/ContentView.swift in Sources */,
+				6A68B747D0104746C62345A7 /* NeuralIOS/Views/IdentityScanner.swift in Sources */,
+				F405D648B08E79CFD3B90757 /* Shared/BandActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F26350DAFE3F19AABFD69AC4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB318F37037900E173273CA2 /* NeuralActivity */;
+			targetProxy = 1241936D4DD3AAD68FE7BFBD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		08E72D54FA3B0CF10DCD6F77 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = NeuralIOS/NeuralIOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JG9474JW32;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NeuralIOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.neural.NeuralIOS;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		36E0C12E141D2415C4DB0830 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JG9474JW32;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NeuralActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.neural.NeuralIOS.activity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		5DA67063EDB48A25FBB4577C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		94D53E0EA3950AF6DFDB9A37 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = NeuralIOS/NeuralIOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JG9474JW32;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NeuralIOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.neural.NeuralIOS;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A66479A0DF305DA8A63443E5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_COMPILATION_MODE = singlefile;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B380DD11A12071DCDD4B59EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JG9474JW32;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NeuralActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.neural.NeuralIOS.activity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1E56F87B57F2389817940826 /* Build configuration list for PBXProject "NeuralIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A66479A0DF305DA8A63443E5 /* Debug */,
+				5DA67063EDB48A25FBB4577C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		61C82B40C940D67F1B37CD2C /* Build configuration list for PBXNativeTarget "NeuralActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B380DD11A12071DCDD4B59EC /* Debug */,
+				36E0C12E141D2415C4DB0830 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9CEF0E6D2AB320648633B8E2 /* Build configuration list for PBXNativeTarget "NeuralIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				08E72D54FA3B0CF10DCD6F77 /* Debug */,
+				94D53E0EA3950AF6DFDB9A37 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 244210E48437B6556980A702 /* Project object */;
+}
