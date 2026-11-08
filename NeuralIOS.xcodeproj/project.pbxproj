@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5F281DD46DB77149E83311B7 /* NeuralIOS/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 82A72717CC330A30EEDEB8E4 /* NeuralIOS/Resources/Assets.xcassets */; };
 		84D32C92EC5D540A91F10324 /* NeuralIOS/Resources/Fonts/OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 183A7C48A5B9C1790EBEF3CA /* NeuralIOS/Resources/Fonts/OFL.txt */; };
 		F17EFD787983FEF1615247E2 /* NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2536D2F0C4F77BC697CF483B /* NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf */; };
 		282EDC2E736C92BCF698EE67 /* NeuralIOS/Resources/Fonts/Geist-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 65DEA6D71E92E21C1204D78A /* NeuralIOS/Resources/Fonts/Geist-Medium.ttf */; };
@@ -71,6 +72,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		82A72717CC330A30EEDEB8E4 /* NeuralIOS/Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "NeuralIOS/Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
 		183A7C48A5B9C1790EBEF3CA /* NeuralIOS/Resources/Fonts/OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "NeuralIOS/Resources/Fonts/OFL.txt"; sourceTree = SOURCE_ROOT; };
 		2536D2F0C4F77BC697CF483B /* NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf"; sourceTree = SOURCE_ROOT; };
 		65DEA6D71E92E21C1204D78A /* NeuralIOS/Resources/Fonts/Geist-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "NeuralIOS/Resources/Fonts/Geist-Medium.ttf"; sourceTree = SOURCE_ROOT; };
@@ -142,6 +144,7 @@
 		19F479106CE8C3BA8C106518 = {
 			isa = PBXGroup;
 			children = (
+				82A72717CC330A30EEDEB8E4 /* NeuralIOS/Resources/Assets.xcassets */,
 				183A7C48A5B9C1790EBEF3CA /* NeuralIOS/Resources/Fonts/OFL.txt */,
 				2536D2F0C4F77BC697CF483B /* NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf */,
 				65DEA6D71E92E21C1204D78A /* NeuralIOS/Resources/Fonts/Geist-Medium.ttf */,
@@ -255,6 +258,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5F281DD46DB77149E83311B7 /* NeuralIOS/Resources/Assets.xcassets in Resources */,
 				84D32C92EC5D540A91F10324 /* NeuralIOS/Resources/Fonts/OFL.txt in Resources */,
 				F17EFD787983FEF1615247E2 /* NeuralIOS/Resources/Fonts/Geist-SemiBold.ttf in Resources */,
 				282EDC2E736C92BCF698EE67 /* NeuralIOS/Resources/Fonts/Geist-Medium.ttf in Resources */,
@@ -340,6 +344,7 @@
 				DEVELOPMENT_TEAM = JG9474JW32;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				INFOPLIST_FILE = NeuralIOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -415,6 +420,7 @@
 				DEVELOPMENT_TEAM = JG9474JW32;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				INFOPLIST_FILE = NeuralIOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
