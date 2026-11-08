@@ -14,52 +14,34 @@ This is the first implementation of the product's native connection and gesture 
 
 The Simulator can run the interface but is not evidence of Bluetooth, pairing, or screen-off operation. This project deliberately has no simulated band or test-only runtime paths.
 
-## Connect
+## Using the app
 
-Close the Mac band app and other connected clients. Put the band in pairing mode, choose **Scan for bands**, select it, and choose **Import Mac identity** when the Mac already owns it. Ownership enrollment is only for deliberately setting up or replacing ownership. Accept the iOS pairing prompt. **Enrollment can replace the Mac's saved identity**; the Mac may need enrollment again afterward.
+On first launch Neural walks through setup: welcome → allow Bluetooth → pairing mode → choose your band → Meta sign-in (with a plain warning that the band may disconnect from other devices such as the Mac) → a "tap your index finger" check → done. A band that already has a saved setup on this phone skips sign-in. **Use my Mac’s setup instead** imports the Mac identity by QR (see below) rather than signing in.
 
-Meta sign-in stays in an isolated, nonpersistent web view. The app validates the intercepted callback before exchanging its token. No Meta-owned URL scheme is registered with iOS. This follows an experimental reverse-engineered service flow; server-side changes or authentication restrictions can block sign-in and are surfaced as failures.
+After setup the main screen is a single ring that shows **Not set up, Connecting, Connected or Needs attention**, and it ripples when a gesture arrives. Battery, wrist and last gesture sit under it, and the Mac link (`SessionController.relayStatus`) appears as one line at the bottom. Problems appear as one sentence and one button. Protocol detail never appears on screen; it goes to the journal. Settings has forget band, haptics, battery alerts, privacy and licenses. **Settings → Advanced** holds journal export, Mac test receiver pairing, Mac identity import and raw packets.
 
-Enrollment persists its host key and stage before progressing. When it finishes, Neural opens a fresh encrypted connection and authenticates the phone before promoting the identity; it also verifies the band when its public key is available. An interrupted finish with a saved band key can be retried with **Connect**; earlier interruptions require explicit sign-in to restart the ceremony using the pending host key. Authentication failures never silently re-enroll the band. Explicit iPhone enrollment permits compatibility mode when Meta omits the band public key, matching the Mac client. A known band key is retained if omitted by the service; supplied invalid or conflicting keys are still rejected. With no known band key, the phone authenticates over an encrypted channel but cannot verify the band identity, and labels the session as unverified. The compatibility flag is persisted before finishing enrollment, and the candidate must succeed on a fresh channel before promotion.
+The look follows the Mac app (`docs/design.md`): monochrome, Geist (bundled under the OFL in `Resources/Fonts`), 6 px controls, 8 px panels, 200 ms motion, plus a matching dark mode. Reduce Motion and Dynamic Type are respected. SwiftUI previews in `Views/Previews.swift` use fixed view states. In DEBUG builds, `NEURAL_SNAPSHOT=<name>` shows one of those states for screenshots without starting the session. There is still no simulated band.
 
-Subsequent **Connect** uses the saved phone identity. Connection desire and the selected iOS peripheral identifier persist across launches. Existing Keychain accounts are retained as credential records; authenticated address bindings allow a new Bluetooth UUID to reuse one. Choose a saved identity by public fingerprint after rediscovery. Connect defaults to saved credentials; pending candidates are explicit when a saved identity exists. Discovery identifiers are local to iOS; they are not desktop identity identifiers. Use **Disconnect** to stop the subscription and cancel future reconnections. Disconnect requests an acknowledged stream stop, then waits for local Core Bluetooth release confirmation or reports a bounded release timeout. Wait for local release before connecting on Mac; destination readiness still needs confirmation.
+## Staying connected
+
+- **Never gives up on ordinary errors.** Only an identity or ownership rejection (or OS pairing mismatch) turns auto-connect off, and so does the person pressing Disconnect. Transport, protocol and locked-Keychain errors back off 1, 2, 4, 8, 16, then 20 s indefinitely; each wait holds a background task so the timer can fire.
+- **Pending connects, not timers.** When the link drops, the transport immediately leaves `CBCentralManager.connect()` pending, with `CBConnectPeripheralOptionEnableAutoReconnect`. A pending connect has no deadline, so the band reconnects whenever it returns, even while the app is suspended. Only setup steps after the link is up have a 60 s deadline. Background scans look for the advertised `FD5F` service, not `FEB8`.
+- **Band pulse.** The subscription to `2D41DA7A`/`2D41DA7C` (see `Documentation/WakeTest.md`) is kept. If it stops for 30 s, the app shows a gentle "Gestures may pause while your phone is locked" with **Reconnect**.
+- **Battery** comes from the standard battery service (`180F/2A19`, read + notify). **Hand** comes from the same `read_hand` RPC the Mac app uses; if the band rejects it twice, it is never asked again.
+- **Gesture sequences.** The band numbers raw gestures and derived interactions with two separate counters. The journal now tracks each one separately. In the 2026-11-08 export, 2,368 "discontinuity" rows came from comparing the two counters; split per stream, 0 of 3,076 gestures were discontinuous.
+- **Live Activity** is minimal (state only) and has no expiry reminder. It does not affect background execution and could be dropped.
+
+### Band picker (AccessorySetupKit)
+
+`Transport/AccessoryPicker.swift` implements the system picker but is **off by default**. Turn it on by adding `NSAccessorySetupKitSupports = [Bluetooth]` and `NSAccessorySetupBluetoothServices = [FD5F]` to Info.plist. Trade-off: on iOS 26 only AccessorySetupKit apps are relaunched after a force quit, but in that mode Core Bluetooth can only reach accessories chosen in the picker. That would likely break the Core Bluetooth link to the Mac (`Relay/`). Without the keys, onboarding uses the in-app scan.
 
 ## Import the Mac identity by QR
 
-To share the Mac's existing band identity instead of enrolling a separate phone identity:
+On the Mac, disconnect the band, then run `swift Tools/ShowMacIdentity.swift <Mac-device-ID>`. On iPhone, choose your band and pick **Use my Mac’s setup instead** (onboarding) or **Settings → Advanced → Use my Mac’s band setup**. The QR **contains the private authentication key**, so keep it out of screenshots. The imported identity replaces the saved one only after it authenticates.
 
-1. On the Mac, disconnect the band in the Mac app. Find the **Mac device ID** used by that app (the Keychain account under `org.meta-neural-py.identity.v1`). This is different from the iPhone's Bluetooth identifier.
-2. From this project folder, run `swift Tools/ShowMacIdentity.swift <Mac-device-ID>`. Allow Keychain access if macOS requests it. This standalone Mac utility displays a QR for 60 seconds; no QR image or identity file is saved. It requires the Swift Command Line Tools.
-3. On iPhone, scan for and select the same band, then choose **Import Mac identity** and scan the Mac's QR. Allow camera access and accept any iOS Bluetooth pairing prompt.
-4. The phone validates the keys, saves a pending candidate in its device-only Keychain, and connects without an ownership enrollment. A candidate replaces the saved phone identity only after connection setup and host authentication succeed. With a saved band key, the phone also verifies the band proof. Compatibility imports cannot verify that proof and are labeled as unverified in the connection status. Authentication failures do not re-enroll.
+## Journal
 
-The QR **contains the private authentication key**. Anyone who copies it can copy the identity. Keep it out of screenshots, recordings, and screen sharing. The window closing does not revoke a photographed code. The utility reads the existing Mac identity without changing it; this is a separate utility, not a button integrated into the Mac app. Version 2 transfers also support Mac records marked `host_verified` with `allow_missing_band_key=true` and no band key. This explicitly carries compatibility permission to the phone; an absent key alone never enables compatibility. The channel remains encrypted and the phone authenticates to the band, but the phone cannot verify the band identity. Existing version 1 transfers with a valid band key remain supported.
-
-Disconnect the active client before connecting the other. Sharing credentials avoids repeated enrollment but does not provide simultaneous connections or automatic handoff. Hardware switching and camera scanning still require verification on real devices.
-
-## Gesture reception
-
-The subscription enables **gestures only**. No EMG, gyroscope, or orientation streams are requested. The interface retains the latest 200 packets and preserves raw and derived codes independently, including unknown values and synthetic flags. A press, derived button-down, derived hold, release, and derived button-up may be different packets; event totals count packets, not user actions.
-
-There are no combo definitions, actions, keyboard control, or model experiments yet. Future consumers can subscribe to the typed `SessionController.gestures` async stream, which has a newest-200 delivery buffer; the journal is independent of UI consumption.
-
-## Background and Live Activity
-
-Core Bluetooth runs independently of the SwiftUI views on a dedicated thread with an active stream run loop. The app enables `bluetooth-central`, initializes a restoration-enabled central manager during launch, and attempts a new L2CAP/authentication/subscription sequence for restored connections. Lost links retry at most five times with exponential delays while execution is available. Bond mismatch (`CBErrorDomain:14`), authentication, storage, and malformed-protocol errors pause for user recovery; none starts enrollment. Turning Bluetooth off pauses recovery. Authentication and enrollment failures require user intervention.
-
-A foreground connection/enrollment starts a Live Activity if allowed. It reports session status and elapsed time without updating on every gesture. The status is marked stale after a minute without a transition so it cannot imply recently confirmed connectivity while the app is suspended. Dismissal, denial, or expiry does not stop Bluetooth processing. A restored/background launch does not try to start a new Live Activity.
-
-A Live Activity does not guarantee screen-off processing. iOS may suspend or terminate the app, and callback data can be delivered later. State restoration is conditional on system policy. Force-quitting, powering off the phone, or operation before first unlock is outside the background guarantee. No audio, location, polling keepalive, or repeated background-task extension is used.
-
-## Diagnostics and manual verification
-
-Open **Diagnostics → Export event journal → Share journal**. The local journal consists of two rotating segments, each up to 2 MiB. It logs gesture packets, connection transitions, lifecycle changes, sequence discontinuities, and sanitized errors. JSON dates are Unix seconds; host uptime is monotonic time for the current boot. `deviceTimestamp` belongs to a separate gesture-device clock and has no inferred wall-clock conversion.
-
-`received.wallTime` and `received.uptime` are captured in the transport callback before decoding, disk I/O, or UI dispatch. `applicationState` records the last iOS lifecycle notification; it **does not detect screen lock or a dark display**. Packets decoded from the same input callback share its receipt context. The journal is bounded, not a complete indefinite recording. A sequence discontinuity is not a validated packet-loss measurement.
-
-Keys and logs use protection that remains accessible after first unlock. Identity keys are device-only Keychain items. Journal files are excluded from backup and do not contain tokens, passwords, receipts, or private keys. Exported gesture data and identifiers remain personal data. **Clear journal and recent events** removes local history and the current export file; future session events continue to be recorded.
-
-See [manual acceptance](Documentation/ManualAcceptance.md) for the device checks. No automated tests, mock band runtime, or scripted test harness is included.
+**Settings → Advanced → Export journal.** The journal is two rotating 2 MiB segments, excluded from backup and free of tokens and private keys. It records gestures, connection transitions, lifecycle, sanitized errors, battery, hand, pulse and per-stream sequence discontinuities.
 
 ## Command-line builds
 
@@ -91,8 +73,11 @@ Protocol reference: the installed **meta-neural-py 0.1.0a1** source, captured as
 
 `generate_project.py` can regenerate the checked-in project using Python's standard library if source membership changes; it is optional and never runs during a build. Signing-team selection is kept in Xcode. No development team or account credentials are committed.
 
-## Verification at delivery
+## Checks
 
-The production protocol, cryptography, enrollment, HTTP, Keychain, journal, transport, and session core have been type-checked and compiled together into a library with the available macOS SDK. All Swift sources pass syntax parsing, and the project/property lists pass `plutil` validation. **The iOS app and widget have not been compiled here because full Xcode and an iOS SDK are absent.** Run the build commands above after installing Xcode; no hardware or background reliability is marked verified.
+```sh
+swiftc -module-cache-path /private/tmp/neural-swift-module-cache NeuralIOS/Session/Models.swift NeuralIOS/Protocol/Wire.swift NeuralIOS/Persistence/IdentityStore.swift Tools/ConnectionPolicyTests.swift -o /private/tmp/neural-connection-policy-tests && /private/tmp/neural-connection-policy-tests
+swiftc -module-cache-path /private/tmp/neural-swift-module-cache NeuralIOS/Session/Models.swift NeuralIOS/Session/BandStatus.swift NeuralIOS/Protocol/Wire.swift NeuralIOS/Persistence/IdentityStore.swift Tests/SessionPolicyTests.swift -o /private/tmp/neural-session-policy-tests && /private/tmp/neural-session-policy-tests
+```
 
-See [connection stabilization and hardware acceptance](Documentation/ConnectionStabilization.md) for the new identity-selection flows, isolated checks, and unexecuted hardware switching experiments.
+Builds and policy checks pass (Xcode 27.2, iOS 26 target). Hardware behaviour, onboarding with a real band, and locked-phone reconnection are **not yet verified on a device**. `generate_project.py` predates resources and Xcode's reformatting; edit the checked-in project instead.

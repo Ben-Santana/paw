@@ -4,6 +4,13 @@ import CoreBluetooth
 /// All mutable transport/protocol state is confined to this running CFRunLoop.
 final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, StreamDelegate, @unchecked Sendable {
     static let service = CBUUID(string: "FEB8")
+    /// What the band advertises. FEB8 is only visible after connecting, so a background
+    /// scan (which must name a service) has to look for this one.
+    static let advertisedService = CBUUID(string: "FD5F")
+    static let batteryService = CBUUID(string: "180F")
+    static let batteryLevel = CBUUID(string: "2A19")
+    /// Ask iOS to re-establish the link by itself after it drops (iOS 17+).
+    private static let connectOptions: [String: Any] = [CBConnectPeripheralOptionEnableAutoReconnect: true]
     static let psm = CBUUID(string: "2D41DA7C-82B6-42AA-B34E-E2E01DF8CC1A")
     /// Once subscribed, the band notifies a single 0x00 on both of these about every 7 seconds.
     /// Each GATT notification wakes the app, which keeps the L2CAP gesture stream flowing while
@@ -13,6 +20,11 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     static let pulseSources: Set<CBUUID> = [psm, pulse]
     private static let pulseTimeout: TimeInterval = 30
     var onDevice: ((BandDevice) -> Void)?
+    /// The link dropped while wanted; the Bool says whether iOS is reconnecting by itself.
+    var onLinkLost: ((Bool) -> Void)?
+    var onBattery: ((Int) -> Void)?
+    /// false when the band pulse stops arriving, true when it resumes.
+    var onPulse: ((Bool) -> Void)?
     var onClosed: ((Bool) -> Void)?
     var onOpen: (() -> Void)?
     var onProgress: ((String) -> Void)?
@@ -70,7 +82,9 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     private var notifyCounts: [CBUUID: Int] = [:]
     private var lastPulse: TimeInterval?
     private var pulseMissingReported = false
+    private var batteryCharacteristic: CBCharacteristic?
     var isPoweredOn: Bool { central?.state == .poweredOn }
+    var isUnauthorized: Bool { [.denied, .restricted].contains(CBManager.authorization) }
 
     override init() {
         super.init()
@@ -116,23 +130,18 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         receivedBytes = 0; sentBytes = 0
         diagnostic("connect requested target=\(id.uuidString)")
         close(); desired = true; target = id; failed = false
-        if !retiring.isEmpty { waitingToConnect = id; connectDeadline = ProcessInfo.processInfo.systemUptime + 60; return }
+        // No deadline while waiting for the link: a pending connect never expires, so the
+        // band reconnects whenever it comes back in range, even while the app is suspended.
+        if !retiring.isEmpty { waitingToConnect = id; return }
         waitingToConnect = nil
         guard isPoweredOn else { return }
-        connectDeadline = ProcessInfo.processInfo.systemUptime + 60
         if let known = central.retrievePeripherals(withIdentifiers: [id]).first { attach(known) }
-        else { central.scanForPeripherals(withServices: applicationState == "foreground" ? nil : [Self.service]) }
+        else { central.scanForPeripherals(withServices: applicationState == "foreground" ? nil : [Self.advertisedService]) }
     }
     func close() {
         diagnostic("closing transport")
         stopScan(); connectDeadline = nil; failed = false
-        if let channel {
-            channel.inputStream.delegate = nil; channel.outputStream.delegate = nil
-            channel.inputStream.close(); channel.outputStream.close()
-            channel.inputStream.remove(from: .current, forMode: .default); channel.outputStream.remove(from: .current, forMode: .default)
-        }
-        channel = nil; output = Data(); gattServicesLeft = nil; gattLogging = false
-        pulseCharacteristics = []; notifyCounts = [:]; lastPulse = nil; pulseMissingReported = false
+        resetChannelState()
         if let peripheral {
             if peripheral.state != .disconnected, isPoweredOn {
                 retiring[ObjectIdentifier(peripheral)] = peripheral
@@ -141,6 +150,18 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             peripheral.delegate = nil
         }
         peripheral = nil
+    }
+    /// Drops everything tied to one link; the peripheral itself is left alone.
+    private func resetChannelState() {
+        if let channel {
+            channel.inputStream.delegate = nil; channel.outputStream.delegate = nil
+            channel.inputStream.close(); channel.outputStream.close()
+            channel.inputStream.remove(from: .current, forMode: .default); channel.outputStream.remove(from: .current, forMode: .default)
+        }
+        channel = nil; output = Data(); gattServicesLeft = nil; gattLogging = false
+        if pulseMissingReported { onPulse?(true) }
+        pulseCharacteristics = []; notifyCounts = [:]; lastPulse = nil; pulseMissingReported = false
+        batteryCharacteristic = nil
     }
     func disconnect() {
         desired = false; waitingToConnect = nil; restoredPeripherals.removeAll()
@@ -164,6 +185,7 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
               ProcessInfo.processInfo.systemUptime - lastPulse >= Self.pulseTimeout else { return }
         pulseMissingReported = true
         diagnostic("band_pulse missing for \(Int(ProcessInfo.processInfo.systemUptime - lastPulse))s: the locked phone may stop delivering gestures")
+        onPulse?(false)
     }
     private static func describe(_ properties: CBCharacteristicProperties) -> String {
         let names: [(CBCharacteristicProperties, String)] = [(.read, "read"), (.write, "write"), (.writeWithoutResponse, "writeNoResponse"), (.notify, "notify"), (.indicate, "indicate"), (.notifyEncryptionRequired, "notifyEncrypted"), (.indicateEncryptionRequired, "indicateEncrypted")]
@@ -204,11 +226,12 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         }
         stopScan(); peripheral = p; p.delegate = self
         if p.state == .connected {
+            connectDeadline = ProcessInfo.processInfo.systemUptime + 60
             progress("Bluetooth connected; discovering band service.")
-            p.discoverServices([Self.service])
+            p.discoverServices([Self.service, Self.batteryService])
         } else {
             progress("Waiting for the band to accept the Bluetooth connection.")
-            central.connect(p, options: nil)
+            central.connect(p, options: Self.connectOptions)
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -236,7 +259,6 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
                         continue
                     }
                     failed = false
-                    connectDeadline = ProcessInfo.processInfo.systemUptime + 60
                     onRestore?(p.identifier)
                     attach(p)
                 }
@@ -259,7 +281,7 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
                 restoredPeripherals.removeAll()
                 for restored in peripherals {
                     guard desired, restored.identifier == target else { central.cancelPeripheralConnection(restored); continue }
-                    failed = false; connectDeadline = ProcessInfo.processInfo.systemUptime + 60
+                    failed = false
                     onRestore?(restored.identifier); attach(restored)
                 }
             }
@@ -282,7 +304,15 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             if desired, p.identifier == target, peripheral == nil, !scanning { attach(p) }
         }
     }
-    func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) { perform { [self] in guard peripheral === p else { return }; progress("Bluetooth connected; discovering band service."); p.discoverServices([Self.service]) } }
+    func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
+        perform { [self] in
+            guard peripheral === p else { return }
+            // Only the setup steps after the link is up have a deadline.
+            connectDeadline = ProcessInfo.processInfo.systemUptime + 60
+            progress("Bluetooth connected; discovering band service.")
+            p.discoverServices([Self.service, Self.batteryService])
+        }
+    }
     func centralManager(_ central: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
         perform { [self] in
             diagnostic("didFailToConnect id=\(p.identifier.uuidString) callbackState=\(p.state.rawValue)", error: error)
@@ -291,12 +321,20 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             fail(bluetoothError(error, fallback: "Bluetooth connection failed."))
         }
     }
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
         perform { [self] in
-            diagnostic("didDisconnect id=\(p.identifier.uuidString) callbackState=\(p.state.rawValue)", error: error)
+            diagnostic("didDisconnect id=\(p.identifier.uuidString) callbackState=\(p.state.rawValue) systemReconnecting=\(isReconnecting)", error: error)
             if retiring.removeValue(forKey: ObjectIdentifier(p)) != nil { completeRelease(); return }
             guard peripheral === p else { return }
-            fail(bluetoothError(error, fallback: "Band disconnected."))
+            if let error, case .pairing = bluetoothError(error, fallback: "") { fail(bluetoothError(error, fallback: "Band disconnected.")); return }
+            // Keep the peripheral and leave a connect pending right away. Core Bluetooth
+            // holds it with no timeout and wakes the app when the band is back.
+            resetChannelState(); connectDeadline = nil; failed = false
+            if desired, !isReconnecting, isPoweredOn {
+                central.connect(p, options: Self.connectOptions)
+                diagnostic("pending connect left in place")
+            }
+            onLinkLost?(isReconnecting)
         }
     }
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -311,6 +349,7 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
                 return
             }
             diagnostic("services discovered=\(services.map { $0.uuid.uuidString })", error: error)
+            if let battery = services.first(where: { $0.uuid == Self.batteryService }) { peripheral.discoverCharacteristics([Self.batteryLevel], for: battery) }
             guard error == nil, let service = services.first(where: { $0.uuid == Self.service }) else { fail(.wire("Band does not expose the expected FEB8 service.")); return }
             progress("Band service found; discovering its channel characteristic.")
             peripheral.discoverCharacteristics([Self.psm, Self.pulse], for: service)
@@ -323,6 +362,7 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         let serviceID = service.uuid.uuidString
         // CBUUID equality matches the 16-bit and 128-bit forms; the band reports the long one.
         let isBandService = service.uuid == Self.service
+        let battery = service.uuid == Self.batteryService ? service.characteristics?.first { $0.uuid == Self.batteryLevel } : nil
         perform { [self] in
             guard self.peripheral === peripheral else { return }
             if let left = gattServicesLeft {
@@ -331,12 +371,22 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
                 if gattServicesLeft == nil { gattLogging = false }
                 return
             }
+            if serviceID == Self.batteryService.uuidString || battery != nil {
+                // Subscribed once the data channel is open, after any pairing prompt.
+                batteryCharacteristic = battery
+                if let battery, channel != nil { subscribeBattery(battery, on: peripheral) }
+                return
+            }
             diagnostic("channel characteristic discovery pulseSources=\(notifiable.count)", error: error)
             if isBandService { pulseCharacteristics = notifiable }
             guard error == nil, let characteristic else { fail(.wire("Band PSM characteristic is missing.")); return }
             progress("Reading the band channel. Accept the iPhone Bluetooth pairing prompt if shown.")
             peripheral.readValue(for: characteristic)
         }
+    }
+    private func subscribeBattery(_ characteristic: CBCharacteristic, on peripheral: CBPeripheral) {
+        if characteristic.properties.contains(.notify) { peripheral.setNotifyValue(true, for: characteristic) }
+        if characteristic.properties.contains(.read) { peripheral.readValue(for: characteristic) }
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         let id = characteristic.uuid, on = characteristic.isNotifying
@@ -348,6 +398,10 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         let value = characteristic.value
         perform { [self] in
+            if self.peripheral === peripheral, characteristic.uuid == Self.batteryLevel {
+                if error == nil, let level = value?.first { onBattery?(Int(min(level, 100))) }
+                return
+            }
             // Once the channel is open, a PSM value is a notification, never a reason to reopen it.
             if self.peripheral === peripheral, Self.pulseSources.contains(characteristic.uuid),
                characteristic.uuid != Self.psm || channel != nil {
@@ -382,6 +436,7 @@ final class BandTransport: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             // Subscriptions belong to a connection, so they are renewed every time the channel opens.
             if pulseCharacteristics.isEmpty { diagnostic("band_pulse unavailable: background delivery will stop when iOS suspends the app") }
             for source in pulseCharacteristics { peripheral.setNotifyValue(true, for: source) }
+            if let batteryCharacteristic { subscribeBattery(batteryCharacteristic, on: peripheral) }
             lastPulse = ProcessInfo.processInfo.systemUptime
             if !gattListed {
                 gattLogging = true; gattListed = true; gattServicesLeft = 0

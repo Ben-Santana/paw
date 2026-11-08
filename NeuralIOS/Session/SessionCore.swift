@@ -2,21 +2,6 @@ import Foundation
 import OSLog
 import CryptoKit
 
-struct SessionSnapshot: Sendable {
-    var state: SessionState = .disconnected
-    var message = "Select your band to connect."
-    var devices: [BandDevice] = []
-    var selected: UUID?
-    var events: [GestureEvent] = []
-    var eventCount = 0
-    var startedAt: Date?
-    var journalError: String?
-    var wantsConnection = false
-    var identityChoices: [IdentityChoice] = []
-    var identityAccount: UUID?
-    var identityFingerprint: String?
-}
-
 /// Owned by the app; every method and callback below runs on transport.perform.
 final class SessionCore: @unchecked Sendable {
     private let logger = Logger(subsystem: "com.neural.ios", category: "BandConnection")
@@ -29,6 +14,8 @@ final class SessionCore: @unchecked Sendable {
     private var activeStreams: RelayWire.Demand?
     var onGesture: ((GestureEvent) -> Void)?
     var onOwnership: ((OwnershipStep, MetaSession, UUID) -> Void)?
+    /// Asks the app to hold background execution while a timed retry is waiting.
+    var onRetryWait: ((Bool) -> Void)?
     private var snapshot = SessionSnapshot()
     private let identities = IdentityStore()
     private var journal: EventJournal?
@@ -41,19 +28,25 @@ final class SessionCore: @unchecked Sendable {
     private var candidatePending = false
     private var verificationReconnect = false
     private var sessionID = UUID()
-    private var lastSequence: UInt64?
+    private var sequences = SequenceTracker()
     private var appState = "launching"
-    private var retries = 0
-    private var reconnectAt: TimeInterval?
+    private var failures = 0
+    private var reconnectAt: TimeInterval? { didSet { if (oldValue == nil) != (reconnectAt == nil) { onRetryWait?(reconnectAt != nil) } } }
+    private var waitingSince: TimeInterval?
     private var scanUntil: TimeInterval?
     private var releaseCompletion: ((Bool) -> Void)?
     private var stoppingUntil: TimeInterval?
     private var userRecoveryRequired = false
     private var available = false
+    private var started = false
+    private var handRequested = false
+    private static let notNearbyAfter: TimeInterval = 30
 
     init() {
-        snapshot.selected = UserDefaults.standard.string(forKey: "selectedBand").flatMap(UUID.init(uuidString:))
-        snapshot.wantsConnection = UserDefaults.standard.bool(forKey: "wantsConnection")
+        let defaults = UserDefaults.standard
+        snapshot.selected = defaults.string(forKey: "selectedBand").flatMap(UUID.init(uuidString:))
+        snapshot.wantsConnection = defaults.bool(forKey: "wantsConnection")
+        if let hand = defaults.string(forKey: "bandHand") { snapshot.hand = Handedness(rawValue: hand) }
         transport.onDevice = { [weak self] device in
             guard let self else { return }
             if let i = self.snapshot.devices.firstIndex(where: { $0.id == device.id }) { self.snapshot.devices[i] = device } else { self.snapshot.devices.append(device) }
@@ -75,35 +68,59 @@ final class SessionCore: @unchecked Sendable {
         transport.onOpen = { [weak self] in self?.opened() }
         transport.onData = { [weak self] data, receipt in self?.received(data, receipt: receipt) }
         transport.onFailure = { [weak self] error in self?.fail(error) }
+        transport.onLinkLost = { [weak self] systemReconnecting in self?.linkLost(systemReconnecting) }
+        transport.onBattery = { [weak self] level in
+            guard let self, self.snapshot.battery != level else { return }
+            self.snapshot.battery = level; self.record("battery", "level=\(level)"); self.publish()
+        }
+        transport.onPulse = { [weak self] healthy in
+            guard let self else { return }
+            if healthy { if self.snapshot.issue == .pulseMissing { self.snapshot.issue = nil } }
+            else if self.snapshot.issue == nil { self.snapshot.issue = .pulseMissing }
+            self.publish()
+        }
         transport.onClosed = { [weak self] confirmed in
             guard let self, self.snapshot.state == .disconnecting else { return }
             let completion = self.releaseCompletion; self.releaseCompletion = nil
+            self.snapshot.issue = confirmed ? nil : .stillReleasing
             self.transition(confirmed ? .disconnected : .failed, confirmed
-                ? "Bluetooth release confirmed locally. Connect on Mac using the same identity; destination availability still needs confirmation."
-                : "Bluetooth release was not confirmed. Automatic connection is paused. Wait before connecting on Mac; do not re-enroll.")
+                ? "Bluetooth release confirmed locally."
+                : "Bluetooth release was not confirmed. Automatic connection is paused.")
             completion?(confirmed)
         }
         transport.onTick = { [weak self] in self?.tick() }
         transport.onRestore = { [weak self] id in
             guard let self else { return }
-            self.proto = nil; self.lastSequence = nil; self.sessionID = UUID(); self.snapshot.selected = id
+            self.proto = nil; self.sequences.reset(); self.sessionID = UUID(); self.snapshot.selected = id
             self.pendingStreams = nil; self.activeStreams = nil
             self.record("restoration", "Restored peripheral; a new authenticated channel is required.")
             self.transition(.connecting, "Restoring band connection.")
         }
     }
-    func start() {
+    /// Loads stored state. Bluetooth starts separately, so first-run onboarding can ask for it.
+    func start(bluetooth: Bool) {
         transport.perform { [self] in
             do { journal = try EventJournal() } catch { snapshot.journalError = "Journal unavailable. Unlock the phone and retry journal access." }
             do { try refreshIdentities() } catch { snapshot.message = error.localizedDescription }
             publish()
         }
+        if bluetooth { startBluetooth() }
+    }
+    func startBluetooth() {
+        guard !started else { return }
+        started = true
         transport.start(selected: snapshot.selected, desired: snapshot.wantsConnection)
     }
     private func context() -> ReceiptContext { ReceiptContext(wallTime: Date(), uptime: ProcessInfo.processInfo.systemUptime, applicationState: appState) }
     private func publish() { onSnapshot?(snapshot) }
     private func transition(_ state: SessionState, _ message: String) {
         logger.info("Session \(state.rawValue, privacy: .public): \(message, privacy: .public)")
+        let now = ProcessInfo.processInfo.systemUptime
+        switch state {
+        case .connecting, .reconnecting, .authenticating, .subscribing, .enrolling: if waitingSince == nil { waitingSince = now }
+        default: waitingSince = nil
+        }
+        if state == .streaming, snapshot.issue != .pulseMissing { snapshot.issue = nil }
         snapshot.state = state; snapshot.message = message
         WakeProbe.shared.setBandState(state.rawValue)
         if state != .streaming { onRelayReady?(nil) }
@@ -123,9 +140,13 @@ final class SessionCore: @unchecked Sendable {
     }
     func scan() {
         guard !snapshot.wantsConnection, stoppingUntil == nil, snapshot.state != .disconnecting else { return }
-        guard available else { transition(.failed, "Turn Bluetooth on and allow Neural access."); return }
-        snapshot.devices = []; transport.scan(); scanUntil = ProcessInfo.processInfo.systemUptime + 15
+        guard available else { snapshot.issue = .bluetoothOff; transition(.failed, "Scan requested while Bluetooth is unavailable."); return }
+        snapshot.devices = []; snapshot.issue = nil; transport.scan(); scanUntil = ProcessInfo.processInfo.systemUptime + 30
         transition(.scanning, "Looking for nearby Meta bands.")
+    }
+    func stopScan() {
+        guard snapshot.state == .scanning else { return }
+        scanUntil = nil; transport.stopScan(); transition(.disconnected, "Scan stopped.")
     }
     func refreshIdentityChoices() {
         do { try refreshIdentities(); publish() } catch { fail(error) }
@@ -134,13 +155,22 @@ final class SessionCore: @unchecked Sendable {
         snapshot.identityChoices = try identities.choices()
         if let selected = snapshot.selected { snapshot.identityAccount = identities.account(for: selected) }
     }
-    func select(_ device: BandDevice) {
+    func select(_ device: BandDevice) { select(id: device.id) }
+    func select(id: UUID) {
         guard !snapshot.wantsConnection, stoppingUntil == nil, snapshot.state != .disconnecting else { return }
-        snapshot.selected = device.id
-        UserDefaults.standard.set(device.id.uuidString, forKey: "selectedBand")
+        snapshot.selected = id
+        UserDefaults.standard.set(id.uuidString, forKey: "selectedBand")
         do { try refreshIdentities() } catch { fail(error); return }
         snapshot.identityFingerprint = nil
         publish()
+    }
+    /// The saved identity to try for a band with a new Bluetooth identifier, if one exists.
+    /// It is bound to the new identifier only after it authenticates.
+    func reusableAccount() -> UUID? {
+        guard let id = snapshot.selected else { return nil }
+        let own = identities.account(for: id)
+        if snapshot.identityChoices.contains(where: { $0.account == own && $0.eligible }) { return own }
+        return snapshot.identityChoices.first(where: { $0.eligible && !$0.pending })?.account
     }
     private func setIntent(_ desired: Bool) {
         snapshot.wantsConnection = desired; UserDefaults.standard.set(desired, forKey: "wantsConnection")
@@ -156,10 +186,11 @@ final class SessionCore: @unchecked Sendable {
     }
     func connect(account: UUID? = nil, pending: Bool? = nil) {
         guard snapshot.selected != nil, stoppingUntil == nil, snapshot.state != .disconnecting else { return }
-        transport.stopScan(); scanUntil = nil; userRecoveryRequired = false; retries = 0; reconnectAt = nil
+        transport.stopScan(); scanUntil = nil; userRecoveryRequired = false; failures = 0; reconnectAt = nil
         do {
-            try chooseCandidate(account: account, pending: pending)
+            try chooseCandidate(account: account ?? reusableAccount(), pending: pending)
             enrollment = nil; meta = nil; enrollmentAttempt = nil; verificationReconnect = false
+            snapshot.issue = nil
             setIntent(true); beginConnection()
         } catch { fail(error) }
     }
@@ -177,18 +208,19 @@ final class SessionCore: @unchecked Sendable {
     func beginEnrollment(_ session: MetaSession) {
         guard let id = snapshot.selected, appState == "foreground", stoppingUntil == nil, snapshot.state != .disconnecting else { return }
         do {
-            transport.disconnect(); proto = nil; reconnectAt = nil; userRecoveryRequired = false
+            transport.disconnect(); proto = nil; reconnectAt = nil; userRecoveryRequired = false; failures = 0
             let account = identities.account(for: id)
             candidateAccount = account; candidatePending = true
             let previous = try identities.load(account, pending: true)
             enrollment = try OwnershipCeremony(previous: previous, allowMissingBandKey: true) { [identities] record in try identities.save(record, for: account, pending: true) }
             meta = session; enrollmentAttempt = UUID(); candidate = nil; verificationReconnect = false
+            snapshot.issue = nil
             setIntent(true); beginConnection()
         } catch { fail(error) }
     }
     private func beginConnection() {
         guard snapshot.wantsConnection, let id = snapshot.selected else { return }
-        proto = nil; lastSequence = nil; sessionID = UUID()
+        proto = nil; sequences.reset(); sessionID = UUID(); handRequested = false
         pendingStreams = nil; activeStreams = nil
         guard available else { transition(.reconnecting, "Waiting for Bluetooth to become available."); return }
         transition(enrollment == nil ? .connecting : .enrolling, enrollment == nil ? "Connecting to your band." : "Enrolling this phone with the band.")
@@ -197,7 +229,7 @@ final class SessionCore: @unchecked Sendable {
     private func opened() {
         guard snapshot.wantsConnection else { transport.disconnect(); return }
         do {
-            if enrollment == nil, candidate == nil { try chooseCandidate() }
+            if enrollment == nil, candidate == nil { try chooseCandidate(account: reusableAccount()) }
             if let candidate {
                 let publicPoint = try P256.Signing.PrivateKey(rawRepresentation: candidate.privateKey).publicKey.x963Representation.dropFirst()
                 let fingerprint = SHA256.hash(data: Data(publicPoint)).map { String(format: "%02x", $0) }.joined()
@@ -231,6 +263,8 @@ final class SessionCore: @unchecked Sendable {
     func recordRelayDiagnostic(_ message: String) {
         record("relay", message)
     }
+    /// Detail that belongs in the journal rather than on screen.
+    func note(_ kind: String, _ message: String) { record(kind, message) }
 
     func setRelayDemand(_ demand: RelayWire.Demand) {
         if relayDemand != demand {
@@ -254,6 +288,16 @@ final class SessionCore: @unchecked Sendable {
         pendingStreams = requested
     }
 
+    /// Reads the wrist setting once per connection, as the Mac app does. A band that
+    /// rejected the read twice is not asked again, so it can never cause a reconnect loop.
+    private func requestHand() {
+        let defaults = UserDefaults.standard, attempts = defaults.integer(forKey: "handReadAttempts")
+        guard !handRequested, attempts < 2 else { return }
+        handRequested = true
+        defaults.set(attempts + 1, forKey: "handReadAttempts")
+        do { try rpc("read_hand", 6, 5) } catch { record("hand", "Hand read not sent.") }
+    }
+
     private func handle(_ signal: BandProtocol.Signal, receipt: ReceiptContext) throws {
         switch signal {
         case .enrolled(let identity): candidate = identity; verificationReconnect = true
@@ -274,7 +318,7 @@ final class SessionCore: @unchecked Sendable {
             try refreshIdentities()
             transition(.subscribing, "Enabling the band's gesture stream.")
             try rpc("request_active", 6, 5, PB.field(6, 2))
-        case .reply(let operation, _):
+        case .reply(let operation, let payload):
             switch operation {
             case "request_active": try rpc("input_subscription", 5, 4)
             case "input_subscription": try reconcileStreams()
@@ -285,13 +329,22 @@ final class SessionCore: @unchecked Sendable {
                     try rpc("stop_streams", 5, 4, BandProtocol.stopFlags)
                 } else {
                     if snapshot.state != .streaming {
-                        retries = 0
+                        failures = 0
                         snapshot.startedAt = Date()
                         transition(.streaming, candidate?.bandPoint == nil ? "Receiving band gestures. Compatibility mode: band identity is unverified." : "Receiving band gestures.")
+                        requestHand()
                     }
                     try reconcileStreams()
                 }
             case "stop_streams": finishDisconnect()
+            case "read_hand":
+                if let config = try? Fields(Fields(payload).bytes(6)), let value = try? config.integer(10), value <= 1 {
+                    let hand: Handedness = value == 1 ? .left : .right
+                    snapshot.hand = hand
+                    UserDefaults.standard.set(hand.rawValue, forKey: "bandHand")
+                    UserDefaults.standard.set(0, forKey: "handReadAttempts")
+                    record("hand", hand.rawValue); publish()
+                } else { record("hand", "Hand reply could not be read.") }
             default: break
             }
         case .ownership(let step):
@@ -303,8 +356,9 @@ final class SessionCore: @unchecked Sendable {
                                           phoneUptime: receipt.uptime, phoneTime: receipt.wallTime, values: values))
         case .gesture(let finger, let action, let derived, let synthetic, let sequence, let timestamp):
             let event = GestureEvent(id: UUID(), sessionID: sessionID, fingerCode: finger, actionCode: action, derivedActionCode: derived, synthetic: synthetic, sequence: sequence, deviceTimestamp: timestamp, received: receipt)
-            if let lastSequence, sequence != (lastSequence &+ 1) & 0xffffffff { record("discontinuity", "Gesture sequence changed from \(lastSequence) to \(sequence); packet loss is not inferred.", receipt: receipt) }
-            lastSequence = sequence
+            if let previous = sequences.gap(sequence, stream: event.stream) {
+                record("discontinuity", "\(event.stream.rawValue) gesture sequence changed from \(previous) to \(sequence); packet loss is not inferred.", receipt: receipt)
+            }
             if snapshot.state == .streaming {
                 onRelayEvent?(RelayWire.Event(kind: .gesture, sequence: sequence, timestamp: timestamp,
                                               phoneUptime: receipt.uptime, phoneTime: receipt.wallTime,
@@ -333,6 +387,7 @@ final class SessionCore: @unchecked Sendable {
     func disconnect(_ completion: ((Bool) -> Void)? = nil) {
         if let completion { releaseCompletion = completion }
         setIntent(false); reconnectAt = nil; scanUntil = nil; transport.stopScan(); enrollmentAttempt = nil; meta = nil
+        if snapshot.issue != .stillReleasing { snapshot.issue = nil }
         guard snapshot.state != .disconnecting else { return }
         if snapshot.state == .streaming {
             transition(.disconnecting, "Stopping gesture subscription before releasing Bluetooth.")
@@ -345,46 +400,88 @@ final class SessionCore: @unchecked Sendable {
         }
         finishDisconnect()
     }
+    /// Forgets the band on this phone. Saved credentials stay in the Keychain, so setting
+    /// the same band up again does not need another Meta sign-in.
+    func forget(_ completion: @escaping () -> Void) {
+        disconnect { [weak self] _ in
+            guard let self else { return }
+            self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; self.snapshot.hand = nil
+            self.snapshot.issue = nil; self.snapshot.events = []; self.snapshot.eventCount = 0
+            for key in ["selectedBand", "bandHand", "handReadAttempts"] { UserDefaults.standard.removeObject(forKey: key) }
+            self.record("connection", "Band forgotten on this phone; credentials retained.")
+            self.transition(.disconnected, "Band forgotten.")
+            completion()
+        }
+    }
     private func finishDisconnect() {
         stoppingUntil = nil; proto = nil; enrollment = nil; candidate = nil; candidateAccount = nil; snapshot.startedAt = nil
         transition(.disconnecting, "Closing Bluetooth; waiting for local release confirmation.")
         transport.disconnect()
     }
     private func availability(_ ready: Bool, message: String) {
-        available = ready
+        available = ready; snapshot.bluetoothReady = ready
         if !ready {
             reconnectAt = nil; proto = nil; transport.close()
+            snapshot.issue = transport.isUnauthorized ? .bluetoothDenied : .bluetoothOff
             if snapshot.wantsConnection { transition(.reconnecting, message) } else { snapshot.message = message; publish() }
-        } else if snapshot.wantsConnection {
-            if !userRecoveryRequired, snapshot.state != .connecting { beginConnection() }
-            // Bluetooth availability must not replace active connection progress.
-        } else { snapshot.message = message; publish() }
+        } else {
+            if snapshot.issue == .bluetoothOff || snapshot.issue == .bluetoothDenied { snapshot.issue = nil }
+            if snapshot.wantsConnection {
+                // Bluetooth availability must not replace active connection progress.
+                if !userRecoveryRequired, snapshot.state != .connecting { beginConnection() }
+            } else { snapshot.message = message; publish() }
+        }
+    }
+    /// The link dropped while the band was wanted. The transport has already left a
+    /// pending connect in place (or iOS is reconnecting by itself), so nothing here
+    /// depends on a timer that a suspended app could not run.
+    private func linkLost(_ systemReconnecting: Bool) {
+        proto = nil; sequences.reset(); sessionID = UUID(); handRequested = false
+        pendingStreams = nil; activeStreams = nil; snapshot.startedAt = nil
+        if stoppingUntil != nil || snapshot.state == .disconnecting { finishDisconnect(); return }
+        guard snapshot.wantsConnection, enrollment == nil else {
+            if enrollment != nil { fail(BandError.transport("Band disconnected during setup.")) }
+            return
+        }
+        transition(.reconnecting, systemReconnecting ? "Link lost; iOS is reconnecting automatically." : "Link lost; a pending connect is waiting for the band.")
     }
     private func fail(_ error: Error) {
         let error = error as? BandError ?? .wire("Band operation failed. Reconnect in the foreground.")
         let detail = "\(error.localizedDescription) Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
         logger.error("\(detail, privacy: .public)")
-        record("error", detail); proto = nil; transport.disconnect(); snapshot.startedAt = nil
-        if stoppingUntil != nil || snapshot.state == .disconnecting { record("shutdown", "Stream stop was not acknowledged."); finishDisconnect(); return }
-        let retryDelay = ConnectionRetryPolicy.delay(for: error, retries: retries)
-        if enrollment != nil || retryDelay == nil {
+        record("error", detail); proto = nil; snapshot.startedAt = nil
+        if stoppingUntil != nil || snapshot.state == .disconnecting { transport.disconnect(); record("shutdown", "Stream stop was not acknowledged."); finishDisconnect(); return }
+        if enrollment != nil || ConnectionRetryPolicy.stopsAutoConnect(error) {
+            // Identity and ownership failures need the person; retrying cannot fix them.
+            transport.disconnect()
             userRecoveryRequired = true; reconnectAt = nil; enrollment = nil; meta = nil; enrollmentAttempt = nil
             setIntent(false)
             try? refreshIdentities()
-            transition(.failed, detail + " Automatic connection is paused. Saved and pending identities were retained. Choose an identity, rediscover the band, or repair OS pairing as appropriate; do not re-enroll as a connection repair.")
+            snapshot.issue = SessionIssue.from(error)
+            transition(.failed, detail + " Automatic connection is paused. Saved and pending identities were retained.")
         } else if snapshot.wantsConnection {
-            let delay = retryDelay!; retries += 1
+            failures += 1
+            let delay = ConnectionRetryPolicy.backoff(failures: failures)
+            transport.close()
             reconnectAt = ProcessInfo.processInfo.systemUptime + delay
-            transition(.reconnecting, error.localizedDescription + " Retry \(retries)/5 when execution is available.")
-        } else { transition(.failed, error.localizedDescription) }
+            if case .storage = error { snapshot.issue = .phoneLocked }
+            transition(.reconnecting, detail + " Retry \(failures) in \(Int(delay)) s; automatic connection stays on.")
+        } else {
+            transport.disconnect()
+            snapshot.issue = SessionIssue.from(error)
+            transition(.failed, detail)
+        }
     }
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
         if let until = stoppingUntil, now >= until { record("shutdown", "Stream stop acknowledgement timed out."); finishDisconnect(); return }
         if let until = scanUntil, now >= until {
-            scanUntil = nil; transport.stopScan(); transition(.disconnected, snapshot.devices.isEmpty ? "No bands found. \(transport.scanSummary) Release the other client and scan again. Use pairing mode only when OS pairing is needed." : "Select your band.")
+            scanUntil = nil; transport.stopScan(); transition(.disconnected, snapshot.devices.isEmpty ? "No bands found. \(transport.scanSummary)" : "Scan finished.")
         }
         if let until = reconnectAt, now >= until, available, snapshot.wantsConnection, !userRecoveryRequired { reconnectAt = nil; beginConnection() }
+        if let since = waitingSince, now - since >= Self.notNearbyAfter, snapshot.wantsConnection, snapshot.issue == nil, available, enrollment == nil {
+            snapshot.issue = .bandNotNearby; publish()
+        }
         do { try proto?.tick(now: now) } catch { fail(error) }
     }
     func exportJournal(_ completion: @escaping (Result<URL, Error>) -> Void) {
