@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 // The Mac app's icons: Lucide (LucideData.swift) and its hand-drawn finger variants
-// (mac_os_meta_band_app/src/MotionSettings.tsx, FingerIcon). Drawn from the same path
+// (runes_mac/src/MotionSettings.tsx, FingerIcon). Drawn from the same path
 // data at the same 1.5 stroke in a 24×24 box, so they match the Mac exactly.
 
 enum Lucide: String, CaseIterable, Sendable {

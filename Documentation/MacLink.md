@@ -9,9 +9,9 @@ The Mac app never connects to the band. Runes on iPhone holds the band and relay
 | Protocol, pairing, crypto (shared) | `RunesIOS/Relay/RelayWire.swift`, `RelayKeyStore.swift`. The Mac app vendors identical copies; `scripts/sync-relay-wire.sh` copies them and `--check` reports drift. |
 | iPhone central | `RunesIOS/Relay/PhoneRelay.swift` |
 | iPhone status API for views | `RunesIOS/Relay/MacLinks.swift`: `MacLinks.shared.macs`, `.pairing`, `.pair(text)`, `.remove(id)`, `.summary`. `SessionController.relayStatus` still carries the one-line summary. |
-| Mac logic, no Bluetooth | `mac_os_meta_band_app/native/phone-link/PhoneLinkCore.swift` |
-| Mac peripheral helper | `mac_os_meta_band_app/native/phone-link/PhoneLinkHelper.swift`, built to `dist-electron/runes-phone-link` |
-| Mac event source | `mac_os_meta_band_app/python/event_sources.py` (`PhoneEventSource`), sink in `bridge.py` |
+| Mac logic, no Bluetooth | `runes_mac/native/phone-link/PhoneLinkCore.swift` |
+| Mac peripheral helper | `runes_mac/native/phone-link/PhoneLinkHelper.swift`, built to `dist-electron/runes-phone-link` |
+| Mac event source | `runes_mac/python/event_sources.py` (`PhoneEventSource`), sink in `bridge.py` |
 
 ## Pairing (once)
 

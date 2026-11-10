@@ -2,7 +2,7 @@
 
 One ring, one sentence, one action. Runes is an instrument, not a dashboard: it answers
 *what is my band doing right now* and gets out of the way. The look is the Mac app's
-(`mac_os_meta_band_app/docs/design.md`) carried to the phone: achromatic, Geist, hairlines,
+(`runes_mac/docs/design.md`) carried to the phone: achromatic, Geist, hairlines,
 no shadows at rest, 200 ms motion. The home screen is the reference; every other screen is
 drawn with the same six tokens and the same handful of parts, defined once in
 `RunesIOS/Views/Design/Theme.swift`.

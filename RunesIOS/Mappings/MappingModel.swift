@@ -1,6 +1,6 @@
 import Foundation
 
-// The Mac app's mapping model (mac_os_meta_band_app/src/shortcuts.ts), ported for iPhone.
+// The Mac app's mapping model (runes_mac/src/shortcuts.ts), ported for iPhone.
 // Same gesture ids, the same combo rules (2–8 steps, hold/release pairing, the same timing
 // choices) and the same idea of one action or several linked actions run in order.
 // Keyboard shortcuts, mouse, radial menus and adjust don't exist on iPhone, so the action
