@@ -13,9 +13,12 @@ struct BandSessionActivity: Widget {
             if let workout = context.state.workout {
                 WorkoutLockScreen(workout: workout, connected: context.state.isConnected)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+            } else if let score = context.state.score {
+                ScoreLockScreen(score: score, connected: context.state.isConnected)
+                    .padding().activityBackgroundTint(Color(.secondarySystemBackground))
             } else {
                 HStack(spacing: 14) {
-                    RunesLogo().frame(width: 28, height: 28)
+                    ProfileMark(icon: context.state.profileIcon).frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(context.isStale ? "Open Runes to check status" : context.state.status).font(.subheadline)
                         LinkIndicators(band: context.state.isConnected, mac: context.state.macConnected)
@@ -28,7 +31,10 @@ struct BandSessionActivity: Widget {
             if let workout = context.state.workout {
                 return DynamicIsland {
                     DynamicIslandExpandedRegion(.leading) {
-                        Label(workout.title, systemImage: "dumbbell").font(.subheadline).lineLimit(1)
+                        HStack(spacing: 6) {
+                            WorkoutGlyph(group: workout.group, size: 22)
+                            Text(workout.title).font(.subheadline).lineLimit(1)
+                        }
                     }
                     DynamicIslandExpandedRegion(.trailing) {
                         if workout.isCounting { Text("\(workout.reps)").font(.title2.monospacedDigit()) }
@@ -40,17 +46,32 @@ struct BandSessionActivity: Widget {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } compactLeading: {
-                    Image(systemName: "dumbbell")
+                    WorkoutGlyph(group: workout.group, size: 18)
                 } compactTrailing: {
                     if workout.finished { Image(systemName: "checkmark") }
                     else if workout.isCounting { Text("\(workout.reps)").monospacedDigit() }
                     else { Image(systemName: "pause") }
                 } minimal: {
-                    Image(systemName: "dumbbell")
+                    WorkoutGlyph(group: workout.group, size: 18)
+                }
+            }
+            if let score = context.state.score {
+                // Two players show both numbers; more show the player the band is on.
+                let focus = score.selected ?? 0
+                return DynamicIsland {
+                    DynamicIslandExpandedRegion(.bottom) { ScoreRow(score: score) }
+                } compactLeading: {
+                    if score.selected == nil { Text("\(score.value(0))").monospacedDigit() }
+                    else { Circle().fill(ScoreTint.fill(score.tint(focus))).frame(width: 9, height: 9) }
+                } compactTrailing: {
+                    Text("\(score.value(score.selected ?? 1))").monospacedDigit()
+                } minimal: {
+                    Text(score.selected == nil ? "\(score.value(0))–\(score.value(1))" : "\(score.value(focus))")
+                        .monospacedDigit().minimumScaleFactor(0.6)
                 }
             }
             return DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) { RunesLogo().frame(width: 24, height: 24) }
+                DynamicIslandExpandedRegion(.leading) { ProfileMark(icon: context.state.profileIcon).frame(width: 24, height: 24) }
                 DynamicIslandExpandedRegion(.trailing) { BatteryRing(level: context.state.battery, size: 22) }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -59,11 +80,11 @@ struct BandSessionActivity: Widget {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             } compactLeading: {
-                RunesLogo().frame(width: 16, height: 16)
+                ProfileMark(icon: context.state.profileIcon).frame(width: 16, height: 16)
             } compactTrailing: {
                 BatteryRing(level: context.state.battery, size: 14)
             } minimal: {
-                RunesLogo().frame(width: 16, height: 16)
+                ProfileMark(icon: context.state.profileIcon).frame(width: 16, height: 16)
             }
         }
     }
@@ -76,7 +97,8 @@ private struct WorkoutLockScreen: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center, spacing: 12) {
+                WorkoutGlyph(group: workout.group, size: 34)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(workout.title).font(.headline)
                     Text(workout.detail).font(.subheadline).foregroundStyle(.secondary)
@@ -100,6 +122,68 @@ private struct WorkoutLockScreen: View {
             }
         }
     }
+}
+
+/// The current exercise's muscle glyph in white; a dumbbell before a group is known, a check
+/// when the workout is done, and a runner for cardio.
+private struct WorkoutGlyph: View {
+    let group: ExerciseGroup?
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if let group, group != .cardio {
+                MuscleFigureGlyph(group: group, size: size, ink: .white, outline: .white.opacity(0.45),
+                                  idle: .white.opacity(0.35), lineWidth: size < 24 ? 1 : 0.8)
+            } else {
+                Image(systemName: group == .cardio ? "figure.run" : "dumbbell").font(.system(size: size * 0.6))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Every player of a game, the numbers as large as the banner allows.
+private struct ScoreLockScreen: View {
+    let score: ScoreActivityState
+    let connected: Bool
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ScoreRow(score: score)
+            if !connected { Text("Band disconnected").font(.caption).foregroundStyle(.secondary) }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ScoreRow: View {
+    let score: ScoreActivityState
+
+    var body: some View {
+        let count = score.names.count
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            ForEach(0..<count, id: \.self) { index in
+                VStack(spacing: 0) {
+                    HStack(spacing: 4) {
+                        Circle().fill(ScoreTint.fill(score.tint(index))).frame(width: 7, height: 7)
+                        Text(score.name(index)).font(.caption).lineLimit(1)
+                            .foregroundStyle(score.selected == index ? .primary : .secondary)
+                    }
+                    Text("\(score.value(index))")
+                        .font(.system(size: count > 4 ? 22 : count > 2 ? 28 : 34, weight: .medium).monospacedDigit())
+                        .contentTransition(.numericText())
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+private extension ScoreActivityState {
+    func name(_ index: Int) -> String { names.indices.contains(index) ? names[index] : "" }
+    func value(_ index: Int) -> Int { scores.indices.contains(index) ? scores[index] : 0 }
+    func tint(_ index: Int) -> Int { tints.indices.contains(index) ? tints[index] : index }
 }
 
 /// Band battery as a filled ring, no number. Empty track until the band reports a level.
@@ -147,38 +231,10 @@ private struct LinkIndicators: View {
     }
 }
 
-/// The Runes mark (Lucide "hand", 24-unit grid), stroked so it scales to any size.
-private struct RunesLogo: View {
+/// The active profile's icon in white, or the Runes mark before a profile is known.
+private struct ProfileMark: View {
+    let icon: String?
     var body: some View {
-        GeometryReader { geo in
-            let k = min(geo.size.width, geo.size.height) / 24
-            Self.hand
-                .applying(CGAffineTransform(scaleX: k, y: k))
-                .stroke(Color.white, style: StrokeStyle(lineWidth: 2 * k, lineCap: .round, lineJoin: .round))
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .accessibilityLabel("Runes")
+        ProfileGlyph(key: icon ?? ProfileIcon.logo, lineWidth: 2).foregroundStyle(Color.white)
     }
-
-    private static let hand: Path = {
-        var p = Path()
-        func finger(x: CGFloat, top: CGFloat, base: CGFloat) {
-            p.move(to: CGPoint(x: x + 4, y: base))
-            p.addLine(to: CGPoint(x: x + 4, y: top))
-            p.addArc(center: CGPoint(x: x + 2, y: top), radius: 2, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: true)
-        }
-        finger(x: 14, top: 6, base: 11)
-        finger(x: 10, top: 4, base: 10); p.addLine(to: CGPoint(x: 10, y: 6))
-        finger(x: 6, top: 6, base: 10.5); p.addLine(to: CGPoint(x: 6, y: 14))
-        p.move(to: CGPoint(x: 18, y: 8))
-        p.addArc(center: CGPoint(x: 20, y: 8), radius: 2, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
-        p.addLine(to: CGPoint(x: 22, y: 14))
-        p.addArc(center: CGPoint(x: 14, y: 14), radius: 8, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
-        p.addLine(to: CGPoint(x: 12, y: 22))
-        p.addCurve(to: CGPoint(x: 6.01, y: 19.66), control1: CGPoint(x: 9.2, y: 22), control2: CGPoint(x: 7.5, y: 21.14))
-        p.addLine(to: CGPoint(x: 2.41, y: 16.06))
-        p.addArc(center: CGPoint(x: 3.825, y: 14.65), radius: 2, startAngle: .degrees(135), endAngle: .degrees(315), clockwise: false)
-        p.addLine(to: CGPoint(x: 7, y: 15))
-        return p
-    }()
 }

@@ -29,33 +29,35 @@ struct AdvancedView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                section("Journal", footer: "Up to 4 MB of connection events and gestures, kept on this phone. Exports contain gesture data and device identifiers.") {
-                    actionRow(exporting ? "Preparing…" : "Export journal") {
+                PanelGroup("Journal", caption: "Up to 4 MB of connection events and gestures, kept on this phone. Exports contain gesture data and device identifiers.") {
+                    ActionRow(exporting ? "Preparing…" : "Export journal") {
                         exporting = true
                         Task { exported = await actions.export(); exporting = false }
                     }
                     .disabled(exporting)
                     if let exported {
-                        rule
-                        ShareLink(item: exported) { rowLabel("Share journal", chevron: true) }.buttonStyle(.plain)
+                        Rule()
+                        ShareLink(item: exported) {
+                            HStack { Text("Share journal").font(.bodyText); Spacer(); LucideIcon(.share, size: 16).foregroundStyle(Color.muted) }.panelRow()
+                        }
+                        .buttonStyle(.plain)
                     }
-                    rule
-                    actionRow("Clear journal") { confirmClear = true }
+                    Rule()
+                    ActionRow("Clear journal") { confirmClear = true }
                     if let problem = values.journalProblem {
-                        rule
-                        Text(problem).font(.caption).foregroundStyle(Color.muted).padding(14)
+                        Rule()
+                        Text(problem).font(.caption).foregroundStyle(Color.muted).padding(Metric.inset)
                     }
                 }
-                section("Band setup", footer: nil) {
-                    actionRow("Use my Mac’s band setup") { scanner = .identity }.disabled(!values.canImportMacSetup)
+                PanelGroup("Band setup") {
+                    ActionRow("Use my Mac’s band setup") { scanner = .identity }.disabled(!values.canImportMacSetup)
                 }
-                section("Raw packets", footer: "\(values.eventCount) received this session. Newest first, up to 200.") {
+                PanelGroup("Raw packets", caption: "\(values.eventCount) received this session. Newest first, up to 200.") {
                     if values.events.isEmpty {
-                        Text("Gesture packets will appear here.").font(.bodyText).foregroundStyle(Color.muted)
-                            .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                        Text("Gesture packets will appear here.").font(.bodyText).foregroundStyle(Color.muted).panelRow()
                     }
                     ForEach(Array(values.events.prefix(200).enumerated()), id: \.element.id) { offset, event in
-                        if offset > 0 { rule }
+                        if offset > 0 { Rule() }
                         NavigationLink { GestureDetail(event: event) } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -63,9 +65,10 @@ struct AdvancedView: View {
                                     Text("\(event.layer) · #\(event.sequence)").font(.caption).foregroundStyle(Color.muted)
                                 }
                                 Spacer()
-                                Text(event.received.wallTime, style: .time).font(.caption).foregroundStyle(Color.muted)
+                                Text(event.received.wallTime, style: .time).font(.caption).foregroundStyle(Color.muted).monospacedDigit()
+                                Chevron()
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 8).contentShape(Rectangle())
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 8).frame(minHeight: Metric.rowTall).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -86,28 +89,6 @@ struct AdvancedView: View {
         }
     }
 
-    private var rule: some View { Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 14) }
-
-    private func section<Content: View>(_ title: String, footer: String?, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionLabel(title).padding(.leading, 2)
-            VStack(spacing: 0, content: content).panel()
-            if let footer { Text(footer).font(.caption).foregroundStyle(Color.muted).padding(.horizontal, 2) }
-        }
-    }
-
-    private func rowLabel(_ title: String, chevron: Bool = false) -> some View {
-        HStack {
-            Text(title).font(.bodyText)
-            Spacer()
-            if chevron { Image(systemName: "square.and.arrow.up").font(.system(size: 13)).foregroundStyle(Color.muted) }
-        }
-        .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
-    }
-
-    private func actionRow(_ title: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { rowLabel(title) }.buttonStyle(.plain)
-    }
 }
 
 struct AdvancedScreen: View {
@@ -145,10 +126,8 @@ struct GestureDetail: View {
     }
     private func row(_ title: String, _ value: String, last: Bool = false) -> some View {
         VStack(spacing: 0) {
-            HStack { Text(title).font(.bodyText); Spacer(); Text(value).font(.bodyText).foregroundStyle(Color.muted).monospacedDigit() }
-                .padding(.horizontal, 14).frame(minHeight: 44)
-            if !last { Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 14) }
+            ValueRow(title, height: Metric.rowDense) { Text(value).monospacedDigit() }
+            if !last { Rule() }
         }
-        .accessibilityElement(children: .combine)
     }
 }

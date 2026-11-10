@@ -114,9 +114,34 @@ final class WorkoutStore: ObservableObject {
         return result
     }
 
+    /// Sets that trained a muscle in each calendar week, oldest first, ending with this week.
+    /// Sets that only work it second-hand count half.
+    func weeklySets(_ muscle: Muscle, weeks: Int = 12, now: Date = Date()) -> [Double] {
+        weeklySets(of: [muscle], weeks: weeks, now: now)
+    }
+
+    /// The same for a group: a set counts once if it trains any of the muscles first-hand.
+    func weeklySets(of muscles: Set<Muscle>, weeks: Int = 12, now: Date = Date()) -> [Double] {
+        let calendar = Calendar.current
+        guard weeks > 0, let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start else { return [] }
+        var result = Array(repeating: 0.0, count: weeks)
+        for log in allSets {
+            let weight = log.exercise.primary.contains(where: muscles.contains) ? 1
+                : log.exercise.secondary.contains(where: muscles.contains) ? 0.5 : 0
+            guard weight > 0, let start = calendar.dateInterval(of: .weekOfYear, for: log.at)?.start,
+                  let ago = calendar.dateComponents([.weekOfYear], from: start, to: thisWeek).weekOfYear,
+                  (0..<weeks).contains(ago) else { continue }
+            result[weeks - 1 - ago] += weight
+        }
+        return result
+    }
+
     /// Days since a muscle was last trained first-hand, nil if never.
-    func daysSince(_ muscle: Muscle, now: Date = Date()) -> Int? {
-        guard let log = allSets.first(where: { $0.exercise.primary.contains(muscle) }) else { return nil }
+    func daysSince(_ muscle: Muscle, now: Date = Date()) -> Int? { daysSince(of: [muscle], now: now) }
+
+    /// Days since any of the muscles was last trained first-hand, nil if never.
+    func daysSince(of muscles: Set<Muscle>, now: Date = Date()) -> Int? {
+        guard let log = allSets.first(where: { $0.exercise.primary.contains(where: muscles.contains) }) else { return nil }
         let calendar = Calendar.current
         return calendar.dateComponents([.day], from: calendar.startOfDay(for: log.at), to: calendar.startOfDay(for: now)).day
     }
@@ -228,6 +253,6 @@ final class WorkoutStore: ObservableObject {
         let next = run.next.map { "Next: \($0.exercise.name), \($0.label.lowercased())" } ?? "Last set"
         return WorkoutActivityState(title: slot.exercise.name, detail: "\(slot.label) · \(Self.target(slot))",
                                     status: status, isCounting: run.phase == .counting, reps: run.reps,
-                                    last: last, next: next, finished: false)
+                                    last: last, next: next, finished: false, group: slot.exercise.group)
     }
 }

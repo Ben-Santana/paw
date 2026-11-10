@@ -14,6 +14,20 @@ final class SessionCore: @unchecked Sendable {
     private var activeStreams: RelayWire.Demand?
     /// Motion streams the phone itself needs (combos with rotation or movement steps).
     private var localMotion = false
+    /// EMG is only requested while a Motion Lab recording runs.
+    private var localEMG = false
+    /// Per connection: the EMG layout was read and validated.
+    private var emgReady = false
+    private var emgReading = false
+    private var activeEMG = false
+    private var pendingEMG: Bool?
+    /// Why EMG is off until the next recording asks again.
+    private var emgBlocked: String?
+    /// An unexpected EMG failure dropped the link once; never ask again this app run.
+    private var emgHardBlocked = false
+    /// Every raw band sample (gyro, orientation, EMG, gesture) while streaming, for the Motion Lab.
+    var onRaw: ((RawSample) -> Void)?
+    var onEMGStatus: ((String) -> Void)?
     /// Orientation and gyroscope samples, whether they were started for the Mac or for this phone.
     var onMotion: ((RelayWire.Event.Kind, [Double]) -> Void)?
     var onGesture: ((GestureEvent) -> Void)?
@@ -99,7 +113,7 @@ final class SessionCore: @unchecked Sendable {
         transport.onRestore = { [weak self] id in
             guard let self else { return }
             self.proto = nil; self.sequences.reset(); self.interpreter.reset(); self.sessionID = UUID(); self.snapshot.selected = id
-            self.pendingStreams = nil; self.activeStreams = nil
+            self.pendingStreams = nil; self.activeStreams = nil; self.resetEMG()
             self.record("restoration", "Restored peripheral; a new authenticated channel is required.")
             self.transition(.connecting, "Restoring band connection.")
         }
@@ -228,7 +242,7 @@ final class SessionCore: @unchecked Sendable {
     private func beginConnection() {
         guard snapshot.wantsConnection, let id = snapshot.selected else { return }
         proto = nil; sequences.reset(); interpreter.reset(); sessionID = UUID(); handRequested = false
-        pendingStreams = nil; activeStreams = nil
+        pendingStreams = nil; activeStreams = nil; resetEMG()
         guard available else { transition(.reconnecting, "Waiting for Bluetooth to become available."); return }
         transition(enrollment == nil ? .connecting : .enrolling, enrollment == nil ? "Connecting to your band." : "Enrolling this phone with the band.")
         transport.connect(id)
@@ -290,19 +304,42 @@ final class SessionCore: @unchecked Sendable {
         do { try reconcileStreams() } catch { fail(error) }
     }
 
+    func setLocalEMG(_ on: Bool) {
+        guard localEMG != on else { return }
+        localEMG = on
+        if on {
+            emgBlocked = nil
+            if emgHardBlocked { emgStatus("EMG is off for this app run after an earlier failure. Relaunch to retry.") }
+        }
+        record("motion_lab", on ? "EMG requested for a recording." : "Recording ended; EMG no longer requested.")
+        guard snapshot.state == .streaming else { return }
+        do { try reconcileStreams() } catch { fail(error) }
+    }
+
+    private func resetEMG() { emgReady = false; emgReading = false; activeEMG = false; pendingEMG = nil }
+    private func emgStatus(_ text: String) { record("emg", text); onEMGStatus?(text) }
+
     private func reconcileStreams() throws {
-        guard pendingStreams == nil else { return }
+        guard pendingStreams == nil, !emgReading else { return }
+        let wantEMG = localEMG && emgBlocked == nil && !emgHardBlocked
+        if wantEMG && !emgReady {
+            // Never enable EMG before its layout has been read and validated.
+            emgReading = true
+            emgStatus("Reading the band’s EMG configuration.")
+            try rpc("emg_configuration", 7, 5)
+            return
+        }
         // The relay only forwards the streams the Mac asked for (see onRelayReady), so streams
         // started for this phone's combos never reach the Mac.
         let requested = RelayWire.Demand(active: true, gyro: (relayDemand.active && relayDemand.gyro) || localMotion,
                                          orientation: (relayDemand.active && relayDemand.orientation) || localMotion)
-        if activeStreams == requested {
+        if activeStreams == requested, activeEMG == wantEMG {
             onRelayReady?(relayDemand)
             return
         }
         onRelayReady?(nil)
-        try rpc("start_streams", 5, 4, BandProtocol.streamFlags(gyro: requested.gyro, orientation: requested.orientation))
-        pendingStreams = requested
+        try rpc("start_streams", 5, 4, BandProtocol.streamFlags(gyro: requested.gyro, orientation: requested.orientation, emg: wantEMG))
+        pendingStreams = requested; pendingEMG = wantEMG
     }
 
     /// Reads the wrist setting once per connection, as the Mac app does. A band that
@@ -339,9 +376,19 @@ final class SessionCore: @unchecked Sendable {
             switch operation {
             case "request_active": try rpc("input_subscription", 5, 4)
             case "input_subscription": try reconcileStreams()
+            case "emg_configuration":
+                emgReading = false
+                switch EMG.configuration(payload) {
+                case .success(let summary): emgReady = true; emgStatus("EMG configuration OK: \(summary).")
+                case .failure(let error): emgBlocked = error.localizedDescription; emgStatus(error.localizedDescription)
+                }
+                if snapshot.state == .streaming || pendingStreams == nil { try reconcileStreams() }
             case "start_streams":
                 activeStreams = pendingStreams
                 pendingStreams = nil
+                let emgOn = pendingEMG ?? false
+                if emgOn != activeEMG { emgStatus(emgOn ? "EMG streaming." : "EMG stopped.") }
+                activeEMG = emgOn; pendingEMG = nil
                 if stoppingUntil != nil {
                     try rpc("stop_streams", 5, 4, BandProtocol.stopFlags)
                 } else {
@@ -367,8 +414,17 @@ final class SessionCore: @unchecked Sendable {
         case .ownership(let step):
             guard let meta, let attempt = enrollmentAttempt else { throw BandError.authentication("Enrollment login expired. Sign in again.") }
             onOwnership?(step, meta, attempt)
+        case .emgUnavailable(let reason):
+            emgReading = false; emgBlocked = reason
+            emgStatus(reason)
+            if pendingStreams != nil { pendingStreams = nil; pendingEMG = nil }
+            try reconcileStreams()
+        case .emg(let values, let sequence, let timestamp):
+            guard snapshot.state == .streaming else { return }
+            onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))
         case .motion(let kind, let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
+            onRaw?(RawSample(kind: kind == .gyro ? .gyro : .orientation, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, values: values))
             if localMotion { onMotion?(kind, values) }
             onRelayEvent?(RelayWire.Event(kind: kind, sequence: sequence, timestamp: timestamp,
                                           phoneUptime: receipt.uptime, phoneTime: receipt.wallTime, values: values))
@@ -378,6 +434,8 @@ final class SessionCore: @unchecked Sendable {
                 record("discontinuity", "\(event.stream.rawValue) gesture sequence changed from \(previous) to \(sequence); packet loss is not inferred.", receipt: receipt)
             }
             if snapshot.state == .streaming {
+                onRaw?(RawSample(kind: .gesture, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp,
+                                 gesture: [finger, action, derived, synthetic ? 1 : 0]))
                 onRelayEvent?(RelayWire.Event(kind: .gesture, sequence: sequence, timestamp: timestamp,
                                               phoneUptime: receipt.uptime, phoneTime: receipt.wallTime,
                                               gesture: [finger, action, derived, synthetic ? 1 : 0]))
@@ -474,7 +532,7 @@ final class SessionCore: @unchecked Sendable {
     /// depends on a timer that a suspended app could not run.
     private func linkLost(_ systemReconnecting: Bool) {
         proto = nil; sequences.reset(); interpreter.reset(); sessionID = UUID(); handRequested = false
-        pendingStreams = nil; activeStreams = nil; snapshot.startedAt = nil
+        pendingStreams = nil; activeStreams = nil; resetEMG(); snapshot.startedAt = nil
         if stoppingUntil != nil || snapshot.state == .disconnecting { finishDisconnect(); return }
         guard snapshot.wantsConnection, enrollment == nil else {
             if enrollment != nil { fail(BandError.transport("Band disconnected during setup.")) }
@@ -487,6 +545,11 @@ final class SessionCore: @unchecked Sendable {
         let detail = "\(error.localizedDescription) Protocol: \(proto?.stage ?? "closed"); enrollment: \(enrollment?.record.stage ?? "none")."
         logger.error("\(detail, privacy: .public)")
         record("error", detail); proto = nil; snapshot.startedAt = nil
+        if emgReading || pendingEMG == true {
+            // Don't let EMG turn into a reconnect loop: one unexpected failure disables it for this run.
+            emgHardBlocked = true; emgStatus("EMG disabled after a connection error while enabling it.")
+        }
+        resetEMG()
         if stoppingUntil != nil || snapshot.state == .disconnecting { transport.disconnect(); record("shutdown", "Stream stop was not acknowledged."); finishDisconnect(); return }
         if enrollment != nil || ConnectionRetryPolicy.stopsAutoConnect(error) {
             // Identity and ownership failures need the person; retrying cannot fix them.

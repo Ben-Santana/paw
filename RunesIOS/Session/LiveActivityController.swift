@@ -10,7 +10,10 @@ final class LiveActivityController {
     private var lastPhase: BandPhase?
     private var battery: Int?
     private var macConnected = false
+    private var profileIcon: String?
     private var workout: WorkoutActivityState?
+    private var score: ScoreActivityState?
+    private var scoreTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
     private var workoutTask: Task<Void, Never>?
     /// Rep counts update at most this often; set changes go out at once.
@@ -51,6 +54,14 @@ final class LiveActivityController {
         Task { await activity.update(content(phase)) }
     }
 
+    /// The active profile's icon; pushes an update only when it changes.
+    func setProfile(icon: String) {
+        guard icon != profileIcon else { return }
+        profileIcon = icon
+        guard let activity, let phase = lastPhase else { return }
+        Task { await activity.update(content(phase)) }
+    }
+
     /// Shows a workout, or the band status again with nil. `alert` lights the Lock Screen
     /// with a sound, for a logged set. Rep-only changes are throttled to save the update budget.
     func show(workout state: WorkoutActivityState?, alert: String? = nil) {
@@ -74,14 +85,33 @@ final class LiveActivityController {
         }
     }
 
+    /// Shows a game's score, or the band status again with nil. `alert` lights the Lock Screen
+    /// with a sound, for a change made from the band.
+    func show(score state: ScoreActivityState?, alert: String? = nil) {
+        score = state
+        if activity == nil, state != nil { start() }
+        guard let activity else { return }
+        let phase = lastPhase ?? .connected
+        scoreTask?.cancel()
+        scoreTask = Task {
+            guard !Task.isCancelled else { return }
+            if let alert {
+                await activity.update(content(phase), alertConfiguration: AlertConfiguration(title: "Score", body: "\(alert)", sound: .default))
+            } else {
+                await activity.update(content(phase))
+            }
+        }
+    }
+
     private func content(_ phase: BandPhase) -> ActivityContent<BandActivityAttributes.ContentState> {
-        // A workout can sit between sets for a while; keep it from going stale too soon.
-        ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected, workout: workout),
-                        staleDate: Date().addingTimeInterval(workout == nil ? 60 : 15 * 60))
+        // A workout or a game can sit unchanged for a while; keep it from going stale too soon.
+        ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected,
+                                       profileIcon: profileIcon, workout: workout, score: score),
+                        staleDate: Date().addingTimeInterval(workout == nil && score == nil ? 60 : 15 * 60))
     }
 
     func end() {
-        updateTask?.cancel(); workoutTask?.cancel()
+        updateTask?.cancel(); workoutTask?.cancel(); scoreTask?.cancel()
         guard let previous = activity else { return }
         activity = nil; lastPhase = nil; battery = nil
         Task { await previous.end(content(.paused), dismissalPolicy: .immediate) }

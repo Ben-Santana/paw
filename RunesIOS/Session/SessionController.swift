@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import SwiftUI
 import UIKit
 import CoreBluetooth
@@ -20,6 +21,7 @@ final class SessionController: ObservableObject {
     private let eventContinuation: AsyncStream<GestureEvent>.Continuation
     private let core: SessionCore
     private let live = LiveActivityController()
+    private var profileWatch: AnyCancellable?
     private var authTask: Task<Void, Never>?
     private var pairTasks: [UUID: Task<Void, Never>] = [:]
     private var loginContinuation: CheckedContinuation<URL, Error>?
@@ -29,7 +31,7 @@ final class SessionController: ObservableObject {
     private let tapHaptic = UIImpactFeedbackGenerator(style: .light)
     private let holdHaptic = UIImpactFeedbackGenerator(style: .medium)
     private let swipeHaptic = UIImpactFeedbackGenerator(style: .soft)
-    private var motionDemand = (mappings: false, workout: false)
+    private var motionDemand = (mappings: false, workout: false, lab: false)
 
     private init() {
         let stream = AsyncStream<GestureEvent>.makeStream(bufferingPolicy: .bufferingNewest(200))
@@ -78,7 +80,22 @@ final class SessionController: ObservableObject {
         // Combos and a running workout both ask for motion; the streams run while either does.
         MappingStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.mappings = on; self?.pushMotionDemand() }
         WorkoutStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.workout = on; self?.pushMotionDemand() }
+        // Motion Lab: raw samples go straight to the recorder on the transport queue; EMG only while recording.
+        let recorder = MotionLab.recorder
+        core.onRaw = { recorder.ingest($0) }
+        core.onEMGStatus = { text in Task { @MainActor in MotionLab.shared.emgStatus = text } }
+        MotionLab.shared.onDemand = { [weak self] on in
+            guard let self else { return }
+            self.motionDemand.lab = on; self.pushMotionDemand()
+            self.core.transport.perform { [weak core = self.core] in core?.setLocalEMG(on) }
+        }
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
+        ScoreStore.shared.onReserve = { MappingStore.shared.reserve($0) }
+        ScoreStore.shared.onActivity = { [weak self] state, alert in self?.live.show(score: state, alert: alert) }
+        ScoreStore.shared.onCue = { ScoreAudio.shared.play($0, with: ScoreStore.shared.controls.sounds) }
+        ScoreStore.shared.onLive = { ScoreAudio.shared.setLive($0) }
+        profileWatch = MappingStore.shared.$library.map(\.active.icon).removeDuplicates()
+            .sink { [weak self] icon in self?.live.setProfile(icon: icon) }
         core.onRelayEvent = { [weak relay] in relay?.forward($0) }
         MappingStore.shared.onBindings = { [weak relay] in relay?.setBindings($0) }
         WakeProbe.shared.start { [weak session] message in
@@ -93,7 +110,7 @@ final class SessionController: ObservableObject {
     }
 
     private func pushMotionDemand() {
-        let on = motionDemand.mappings || motionDemand.workout
+        let on = motionDemand.mappings || motionDemand.workout || motionDemand.lab
         core.transport.perform { [weak core] in core?.setLocalMotion(on) }
     }
 
@@ -109,6 +126,8 @@ final class SessionController: ObservableObject {
         let previousBattery = snapshot.battery
         snapshot = state
         bluetoothAuthorization = CBManager.authorization
+        // Auto-reconnect at launch never goes through connect(); start the activity here too.
+        if foreground, state.wantsConnection { live.start() }
         live.update(state)
         if !state.wantsConnection {
             for task in pairTasks.values { task.cancel() }; pairTasks.removeAll()
@@ -118,8 +137,8 @@ final class SessionController: ObservableObject {
     /// Runs gesture mappings, then one haptic per physical gesture; the end of a hold is silent.
     private func react(to gesture: BandGesture) {
         // Mappings and workouts run in the background too, so they come before the foreground check.
-        // A running workout's control gestures don't also run mappings.
-        if !WorkoutStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
+        // A running workout's control gestures don't also run mappings, nor do a live game's.
+        if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
         switch gesture.kind {
         case .tap, .doubleTap: tapHaptic.impactOccurred()
@@ -141,6 +160,7 @@ final class SessionController: ObservableObject {
 
     func lifecycle(_ state: String) {
         foreground = state == "foreground"
+        if foreground, snapshot.wantsConnection { live.start() }
         bluetoothAuthorization = CBManager.authorization
         core.transport.perform { [core] in core.lifecycle(state) }
     }

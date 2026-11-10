@@ -34,18 +34,14 @@ struct SettingsView<Advanced: View>: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 28) {
-                    group("Band") {
-                        row("Battery") { Text(values.battery.map { "\($0)%" } ?? "—").foregroundStyle(Color.muted).monospacedDigit() }
-                        divider
-                        row("Hand") { Text(values.hand.map { $0 == .left ? "Left" : "Right" } ?? "—").foregroundStyle(Color.muted) }
-                        divider
-                        Button { confirmForget = true } label: {
-                            Text("Forget band").font(.bodyText).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                                .padding(.horizontal, 14).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain).disabled(!values.bandSetUp)
+                    PanelGroup("Band") {
+                        ValueRow("Battery") { Text(values.battery.map { "\($0)%" } ?? "—").monospacedDigit() }
+                        Rule()
+                        ValueRow("Hand") { Text(values.hand.map { $0 == .left ? "Left" : "Right" } ?? "—") }
+                        Rule()
+                        ActionRow("Forget band") { confirmForget = true }.disabled(!values.bandSetUp)
                     }
-                    group("Mac") {
+                    PanelGroup("Mac") {
                         ForEach(values.macs) { mac in
                             Button { macToRemove = mac } label: {
                                 HStack {
@@ -54,49 +50,46 @@ struct SettingsView<Advanced: View>: View {
                                     Text(mac.state == .connected ? "Connected" : mac.statusText.replacingOccurrences(of: mac.name, with: "Mac"))
                                         .font(.bodyText).foregroundStyle(Color.muted).lineLimit(1)
                                 }
-                                .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
+                                .panelRow()
                             }
                             .buttonStyle(.plain)
                             .accessibilityHint("Shows the option to remove this Mac")
-                            divider
+                            .swipeToDelete(confirms: true) { macToRemove = mac }
+                            Rule()
                         }
-                        Button { scanProblem = nil; scanningMac = true } label: {
-                            HStack {
-                                Text(values.macs.isEmpty ? "Pair Mac" : "Pair another Mac").font(.bodyText)
-                                Spacer()
-                                Image(systemName: "qrcode.viewfinder").font(.system(size: 15)).foregroundStyle(Color.muted)
-                            }
-                            .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        ActionRow(values.macs.isEmpty ? "Pair Mac" : "Pair another Mac", icon: .qrCode) { scanProblem = nil; scanningMac = true }
                         if let progress = pairingText {
-                            divider
+                            Rule()
                             Text(progress).font(.caption).foregroundStyle(Color.muted)
-                                .padding(.horizontal, 14).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    group("Preferences") {
+                    PanelGroup("Preferences") {
                         Toggle(isOn: $haptics) { label("Haptics on gesture", "A light tap when a gesture arrives while Runes is open.") }
-                            .padding(.horizontal, 14).padding(.vertical, 10)
-                        divider
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                        Rule()
                         Toggle(isOn: $batteryAlerts) { label("Band battery alerts", "A notification when the band drops to 20%.") }
-                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                             .onChange(of: batteryAlerts) { _, on in actions.batteryAlertsChanged(on) }
                     }
-                    group("About") {
-                        row("Version") { Text(values.version).foregroundStyle(Color.muted).monospacedDigit() }
-                        divider
-                        link("Privacy") { PrivacyView() }
-                        divider
-                        link("Licenses") { LicensesView() }
+                    PanelGroup("About") {
+                        ValueRow("Version") { Text(values.version).monospacedDigit() }
+                        Rule()
+                        LinkRow("Privacy") { PrivacyView() }
+                        Rule()
+                        LinkRow("Licenses") { LicensesView() }
                     }
-                    group(nil) { link("Advanced") { advanced() } }
+                    PanelGroup(nil) {
+                        LinkRow("Motion lab") { MotionLabScreen() }
+                        Rule()
+                        LinkRow("Advanced") { advanced() }
+                    }
                 }
                 .padding(Metric.gutter)
             }
             .page()
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: actions.done).font(.label) } }
+            .toolbar { BackToolbarItem(action: actions.done) }
             .sheet(isPresented: $scanningMac) {
                 IdentityScanner(title: "Scan the code on your Mac") { text in scanProblem = actions.pairMac(text) }
             }
@@ -125,15 +118,6 @@ struct SettingsView<Advanced: View>: View {
         }
     }
 
-    private var divider: some View { Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 14) }
-
-    private func group<Content: View>(_ title: String?, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let title { SectionLabel(title).padding(.leading, 2) }
-            VStack(spacing: 0, content: content).panel()
-        }
-    }
-
     private func label(_ title: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.bodyText)
@@ -141,23 +125,6 @@ struct SettingsView<Advanced: View>: View {
         }
     }
 
-    private func row<Value: View>(_ title: String, @ViewBuilder value: () -> Value) -> some View {
-        HStack { Text(title).font(.bodyText); Spacer(); value().font(.bodyText) }
-            .padding(.horizontal, 14).frame(minHeight: 48)
-            .accessibilityElement(children: .combine)
-    }
-
-    private func link<Destination: View>(_ title: String, @ViewBuilder destination: @escaping () -> Destination) -> some View {
-        NavigationLink(destination: destination) {
-            HStack {
-                Text(title).font(.bodyText)
-                Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.muted)
-            }
-            .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
 }
 
 /// Live settings sheet.

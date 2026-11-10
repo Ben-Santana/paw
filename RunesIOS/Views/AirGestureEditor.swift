@@ -55,7 +55,7 @@ struct AirGestureEditor: View {
                     Text(message).font(.caption).foregroundStyle(Color.muted).frame(maxWidth: .infinity, alignment: .leading)
                     MappingGroup("Settings", caption: "The gesture before this step starts recording. Shapes that compete are compared after their windows close; the highest similarity above its minimum wins. Works best with your elbow still and forearm pointing forward.") {
                         TextField("Shape name (optional)", text: $name)
-                            .font(.bodyText).padding(.horizontal, 14).frame(minHeight: 48)
+                            .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
                         RowDivider()
                         slider("Minimum similarity", value: $minSimilarity, range: 1...100, step: 1, text: "\(Int(minSimilarity))%")
                         RowDivider()
@@ -63,15 +63,15 @@ struct AirGestureEditor: View {
                     }
                     .disabled(recording)
                 }
-                .padding(16)
+                .padding(Metric.gutter)
             }
-            .background(Color.paper)
+            .page()
             .navigationTitle("Air gesture")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { onSave(shape); dismiss() }.disabled(recording || !shape.isValid)
+                    Button("Save") { onSave(shape); dismiss() }.font(.label).disabled(recording || !shape.isValid)
                 }
             }
         }
@@ -137,7 +137,7 @@ struct AirGestureEditor: View {
             HStack { Text(title).font(.bodyText); Spacer(); Text(text).font(.bodyText).foregroundStyle(Color.muted).monospacedDigit() }
             Slider(value: value, in: range, step: step).accessibilityLabel(title)
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, Metric.inset).padding(.vertical, 10)
     }
 
     /// A saved normalized path, centered on the pad.

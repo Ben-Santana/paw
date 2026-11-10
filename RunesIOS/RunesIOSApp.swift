@@ -5,6 +5,8 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Lets `OrientationLock` know how the phone is held while the interface is upright.
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         if RunesIOSApp.snapshotName != nil { return true }
         UNUserNotificationCenter.current().delegate = self
         // Instantiate during launch, including a Core Bluetooth restoration launch.
@@ -15,6 +17,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                              willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner]
     }
+    /// Runes is a portrait app; one screen (Score) turns. See `OrientationLock`.
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        OrientationLock.allowed
+    }
     func applicationDidBecomeActive(_ application: UIApplication) { lifecycle("foreground") }
     func applicationWillResignActive(_ application: UIApplication) { lifecycle("inactive") }
     func applicationDidEnterBackground(_ application: UIApplication) { lifecycle("background") }
@@ -22,6 +28,43 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     private func lifecycle(_ state: String) {
         guard RunesIOSApp.snapshotName == nil else { return }
         SessionController.shared.lifecycle(state)
+    }
+}
+
+/// Which way the interface may face. Portrait everywhere, except while a screen that asks
+/// for more is showing; leaving it turns the interface back upright.
+@MainActor
+enum OrientationLock {
+    private(set) static var allowed: UIInterfaceOrientationMask = .portrait
+
+    /// The landscape the phone is being held in, if any. The interface turns the opposite
+    /// way to the device.
+    private static var heldSideways: UIInterfaceOrientationMask? {
+        switch UIDevice.current.orientation {
+        case .landscapeLeft: .landscapeRight
+        case .landscapeRight: .landscapeLeft
+        default: nil
+        }
+    }
+
+    static func set(_ mask: UIInterfaceOrientationMask) {
+        guard mask != allowed else { return }
+        allowed = mask
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows {
+                var controller = window.rootViewController
+                while let current = controller {
+                    current.setNeedsUpdateOfSupportedInterfaceOrientations()
+                    controller = current.presentedViewController
+                }
+            }
+            if mask == .portrait {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+            } else if let held = heldSideways, mask.contains(held) {
+                // Opened with the phone already on its side: turn now, not at the next tilt.
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: held))
+            }
+        }
     }
 }
 

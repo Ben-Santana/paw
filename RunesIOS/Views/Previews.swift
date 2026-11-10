@@ -80,16 +80,36 @@ struct SnapshotGallery: View {
             HomeView(status: home.1)
         } else if let step = PreviewFixtures.onboarding.first(where: { "onboarding-\($0.0)" == name }) {
             OnboardingView(step: step.1, context: step.2)
+        } else if name == "style-guide" {
+            StyleGuideGallery()
         } else if name == "ring-lab" || name == "ring-demo" {
             RingLab(autoplay: name == "ring-demo")
         } else if name == "settings" {
             SettingsView(values: SettingsValues(battery: 82, hand: .left, version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "mappings" {
             MappingsScreen(store: PreviewFixtures.mappings)
+        } else if name == "mapping-editor" {
+            NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-a", title: "Focus") }
         } else if name == "applications" {
-            ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false))
+            ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false), scores: ScoreStore(preview: PreviewFixtures.score(7, 4)))
+        } else if ["score", "score-idle", "score-three", "score-all"].contains(name) {
+            // One player full screen while a game is live; "score-all" and an idle game show everyone.
+            let game = name == "score" ? PreviewFixtures.score(7, 4) : name == "score-idle" ? PreviewFixtures.score(0, 0, live: false)
+                : PreviewFixtures.score(7, 4, 11, 2, 0, 9)
+            NavigationStack { ScoreScreen(store: ScoreStore(preview: game), showAll: name == "score-all" ? true : nil) }
+        } else if name == "score-settings" {
+            // A combo on one player shows how a combo reads in the list.
+            let controls: ScoreControls = {
+                var c = ScoreControls.standard
+                c.set(ScoreTrigger(steps: [ComboStep(.holdMiddle), ComboStep(.tapIndex), ComboStep(.releaseMiddle)]), for: .add(1))
+                return c
+            }()
+            ScoreSettingsScreen(store: ScoreStore(preview: PreviewFixtures.score(7, 4, 11), controls: controls))
         } else if name == "workouts" {
             NavigationStack { WorkoutsScreen(store: PreviewFixtures.workouts(running: false), path: .constant([])) }
+        } else if name == "muscle-history" {
+            let store = PreviewFixtures.workouts(running: false)
+            MuscleHistorySheet(title: "Chest", weeks: store.weeklySets(.chest), daysSince: store.daysSince(.chest))
         } else if name == "exercise-picker" {
             ExercisePicker(selected: .bicepCurl) { _ in }
         } else if name == "workout-settings" {

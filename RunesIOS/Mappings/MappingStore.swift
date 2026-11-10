@@ -25,6 +25,22 @@ final class MappingStore: ObservableObject {
         init(id: Int, gesture: GestureKind, ranMapping: Bool = false) { self.init(id: id, step: ComboStep(gesture), ranMapping: ranMapping) }
         var gesture: GestureKind { step.gesture }
     }
+    /// Gestures a running app has taken (a live Score game). Mappings that use one are off
+    /// until it gives them back; nothing about them is changed or saved.
+    @Published private(set) var reserved: Set<GestureKind> = []
+    func reserve(_ gestures: Set<GestureKind>) {
+        guard gestures != reserved else { return }
+        reserved = gestures
+        configureEngine()
+    }
+    func isSuspended(_ mapping: Mapping) -> Bool { mapping.uses(reserved) }
+    private func configureEngine() {
+        let wanted = motionWanted
+        engine.configure(library.active.mappings.filter { !$0.uses(reserved) })
+        if motionWanted != wanted { onMotionDemand?(motionWanted) }
+        stopTickerIfIdle()
+    }
+
     /// Told whether any live combo needs the band's motion streams. Set by the session.
     var onMotionDemand: ((Bool) -> Void)? { didSet { onMotionDemand?(motionWanted) } }
     /// Set while the air gesture editor records from the band; receives each orientation sample.
@@ -138,10 +154,7 @@ final class MappingStore: ObservableObject {
 
     private func save() {
         onBindings?(bindings)
-        let wanted = motionWanted
-        engine.configure(library.active.mappings)
-        if motionWanted != wanted { onMotionDemand?(motionWanted) }
-        stopTickerIfIdle()
+        configureEngine()
         guard !previewOnly, let data = try? JSONEncoder().encode(library) else { return }
         UserDefaults.standard.set(data, forKey: Self.key)
     }

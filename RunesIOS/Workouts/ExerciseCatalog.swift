@@ -4,51 +4,6 @@ import Foundation
 // whether the band can count its reps. Most can't (the band only sees the forearm's
 // orientation and gyroscope), so those log the set's target when it stops, or its time.
 
-/// A muscle on the body map.
-enum Muscle: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
-    case chest, shoulders, biceps, triceps, forearms, abs, obliques, traps, lats, lowerBack, glutes, quads, hamstrings, calves
-
-    var id: String { rawValue }
-    var name: String {
-        switch self {
-        case .chest: "Chest"
-        case .shoulders: "Shoulders"
-        case .biceps: "Biceps"
-        case .triceps: "Triceps"
-        case .forearms: "Forearms"
-        case .abs: "Abs"
-        case .obliques: "Obliques"
-        case .traps: "Traps"
-        case .lats: "Upper back"
-        case .lowerBack: "Lower back"
-        case .glutes: "Glutes"
-        case .quads: "Quads"
-        case .hamstrings: "Hamstrings"
-        case .calves: "Calves"
-        }
-    }
-}
-
-/// The picker's filter tabs, and each exercise's icon.
-enum ExerciseGroup: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
-    case chest, back, shoulders, arms, legs, core, cardio
-
-    var id: String { rawValue }
-    var name: String { rawValue.capitalized }
-    /// Highlighted on the group's small body icon.
-    var muscles: Set<Muscle> {
-        switch self {
-        case .chest: [.chest]
-        case .back: [.lats, .traps, .lowerBack]
-        case .shoulders: [.shoulders]
-        case .arms: [.biceps, .triceps, .forearms]
-        case .legs: [.quads, .hamstrings, .glutes, .calves]
-        case .core: [.abs, .obliques]
-        case .cardio: []
-        }
-    }
-}
-
 enum Equipment: String, Codable, Sendable, Hashable {
     case barbell, dumbbell, cable, machine, bodyweight, kettlebell, other
     var name: String { rawValue.capitalized }

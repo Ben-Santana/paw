@@ -79,9 +79,9 @@ struct OnboardingView: View {
     private var topBar: some View {
         HStack {
             if step != .welcome && step != .done {
-                Button(action: actions.back) {
-                    Image(systemName: "chevron.left").font(.system(size: 16, weight: .medium)).frame(width: 44, height: 44)
-                }.accessibilityLabel("Back")
+                IconButton(.chevronLeft, action: actions.back).accessibilityLabel("Back")
+            } else {
+                Color.clear.frame(width: Metric.tap, height: Metric.tap)
             }
             Spacer()
             HStack(spacing: 6) {
@@ -92,7 +92,7 @@ struct OnboardingView: View {
             }
             .accessibilityElement().accessibilityLabel("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")
             Spacer()
-            Color.clear.frame(width: 44, height: 44)
+            Color.clear.frame(width: Metric.tap, height: Metric.tap)
         }
         .padding(.horizontal, 8).frame(height: 52)
     }
@@ -172,18 +172,18 @@ struct OnboardingView: View {
                         Text(context.searching ? "Searching…" : "No bands found.").font(.bodyText).foregroundStyle(Color.muted)
                         Spacer()
                     }
-                    .padding(.horizontal, 14).frame(minHeight: 52)
+                    .padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowTall)
                 }
                 ForEach(Array(context.devices.enumerated()), id: \.element.id) { offset, device in
-                    if offset > 0 { Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 14) }
+                    if offset > 0 { Rule() }
                     Button { actions.choose(device) } label: {
                         HStack {
                             Text(device.name).font(.bodyText)
                             Spacer()
                             Text(nearness(device.rssi)).font(.caption).foregroundStyle(Color.muted)
-                            Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.muted)
+                            Chevron()
                         }
-                        .padding(.horizontal, 14).frame(minHeight: 52).contentShape(Rectangle())
+                        .panelRow(height: Metric.rowTall)
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Chooses this band.")
@@ -207,7 +207,7 @@ struct OnboardingView: View {
                 Text("This may disconnect your band from other devices, like your Mac. They may need to be set up again afterwards.")
                     .font(.bodyText).fixedSize(horizontal: false, vertical: true)
             }
-            .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Metric.inset).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.soft, in: RoundedRectangle(cornerRadius: Metric.panel))
             .overlay(RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.rule, lineWidth: Metric.hairline))
             .accessibilityElement(children: .combine)

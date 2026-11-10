@@ -12,6 +12,7 @@ enum AppRoute: Hashable {
     case workouts
     case editWorkout(String)
     case activeWorkout
+    case score
 }
 
 // MARK: Applications
@@ -19,10 +20,13 @@ enum AppRoute: Hashable {
 struct ApplicationsScreen: View {
     @ObservedObject var workouts: WorkoutStore
     var done: () -> Void = {}
+    @ObservedObject private var pins = PinStore.shared
+    @ObservedObject private var scores: ScoreStore
     @State private var path: [AppRoute]
 
-    init(workouts: WorkoutStore, initialRoute: AppRoute? = nil, done: @escaping () -> Void = {}) {
+    init(workouts: WorkoutStore, scores: ScoreStore? = nil, initialRoute: AppRoute? = nil, done: @escaping () -> Void = {}) {
         self.workouts = workouts
+        self.scores = scores ?? .shared
         self.done = done
         _path = State(initialValue: initialRoute.map { [$0] } ?? [])
     }
@@ -34,41 +38,70 @@ struct ApplicationsScreen: View {
                     Text("Apps that run from your band, also while your phone is locked.")
                         .font(.caption).foregroundStyle(Color.muted).padding(.bottom, 16)
                     Hairline()
-                    NavigationLink(value: AppRoute.workouts) {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
-                                if workouts.run != nil { OrbitDot(radius: 22) }
-                                LucideIcon(.dumbbell, size: 18)
-                            }
-                            .frame(width: 44, height: 44)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Workouts").font(.heading)
-                                Text(workouts.run.map { "\($0.name) in progress" } ?? "Your split, a journal, and reps from your band")
-                                    .font(.caption).foregroundStyle(Color.muted)
-                            }
-                            Spacer()
-                            LucideIcon(.chevronRight, size: 16).foregroundStyle(Color.muted)
-                        }
-                        .padding(.vertical, 16).contentShape(Rectangle())
+                    ForEach(Array(RunesApp.allCases.enumerated()), id: \.element) { index, app in
+                        appRow(app)
+                        Hairline(delay: 0.1 * Double(index + 1))
                     }
-                    .buttonStyle(PressRow())
-                    Hairline(delay: 0.1)
+                    Text("Touch and hold an app to pin it to the home screen.")
+                        .font(.caption).foregroundStyle(Color.muted).padding(.top, 16)
                 }
                 .padding(Metric.gutter)
             }
             .page()
             .navigationTitle("Applications").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done).font(.label) } }
+            .toolbar { BackToolbarItem(action: done) }
             .navigationDestination(for: AppRoute.self) { route in
                 switch route {
                 case .workouts: WorkoutsScreen(store: workouts, path: $path)
                 case .editWorkout(let id): WorkoutEditor(store: workouts, planID: id)
                 case .activeWorkout: ActiveWorkoutScreen(store: workouts)
+                case .score: ScoreScreen(store: scores)
                 }
             }
         }
         .tint(Color.ink)
+    }
+
+    private func subtitle(_ app: RunesApp) -> String {
+        switch app {
+        case .workouts: return workouts.run.map { "\($0.name) in progress" } ?? "Your split, a journal, and reps from your band"
+        case .score: return scores.game.live ? scores.game.summary : "Keep score from your band, without looking"
+        }
+    }
+
+    private func appRow(_ app: RunesApp) -> some View {
+        NavigationLink(value: app.route) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
+                    if app == .workouts ? workouts.run != nil : scores.game.live { OrbitDot(radius: 22) }
+                    LucideIcon(app.icon, size: 18)
+                }
+                .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(app.title).font(.heading)
+                    Text(subtitle(app)).font(.caption).foregroundStyle(Color.muted)
+                }
+                Spacer()
+                if pins.isPinned(app) {
+                    Text("Pinned").font(.caption).foregroundStyle(Color.muted)
+                }
+                LucideIcon(.chevronRight, size: 16).foregroundStyle(Color.muted)
+            }
+            .padding(.vertical, 16).contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .contextMenu {
+            if pins.isPinned(app) {
+                Button("Unpin from home", role: .destructive) { pins.unpin(app) }
+            } else {
+                Button(pins.isFull ? "Pin to home, replacing one" : "Pin to home") {
+                    // When all three slots are taken, the home screen asks which to replace.
+                    if !pins.pin(app) { done() }
+                }
+            }
+        }
+        .accessibilityHint(pins.isPinned(app) ? "Touch and hold to unpin from the home screen." : "Touch and hold to pin to the home screen.")
     }
 }
 
@@ -949,7 +982,7 @@ struct CapsuleAction: ButtonStyle {
         configuration.label
             .font(.label)
             .foregroundStyle(filled ? Color.paper : Color.ink)
-            .frame(maxWidth: .infinity, minHeight: 52)
+            .frame(maxWidth: .infinity, minHeight: Metric.rowTall)
             .background(Capsule().fill(filled ? Color.ink : Color.clear))
             .overlay(Capsule().strokeBorder(Color.ink, lineWidth: Metric.hairline))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)

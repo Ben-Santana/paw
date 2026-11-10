@@ -37,7 +37,7 @@ struct WorkoutTabBar: View {
                             Text(tab.label).font(.geist(11, on ? .medium : .regular, relativeTo: .caption2))
                         }
                         .foregroundStyle(on ? Color.ink : Color.muted)
-                        .frame(maxWidth: .infinity, minHeight: 52).contentShape(Rectangle())
+                        .frame(maxWidth: .infinity, minHeight: Metric.rowTall).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(on ? .isSelected : [])
@@ -55,16 +55,15 @@ struct TodayTab: View {
     @ObservedObject var store: WorkoutStore
     let start: () -> Void
     let openRun: () -> Void
+    @State private var inspecting: ExerciseGroup?
 
     var body: some View {
         VStack(spacing: 14) {
             if let run = store.run {
                 LiveRunBanner(run: run, open: openRun)
             }
-            BodyMapView(freshness: store.freshness())
+            MuscleBlob(freshness: store.freshness(), daysSince: { store.daysSince(of: $0.muscles) }) { inspecting = $0 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 8)
-            FreshnessLegend()
             if store.run == nil {
                 Button(action: start) {
                     VStack(spacing: 2) {
@@ -79,21 +78,9 @@ struct TodayTab: View {
             WeekStrip(history: store.history)
         }
         .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 14)
-    }
-}
-
-/// Ink for today, fading to an outline after a week.
-private struct FreshnessLegend: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            Text("Today").font(.caption).foregroundStyle(Color.muted)
-            LinearGradient(colors: [Color.ink, Color.ink.opacity(0)], startPoint: .leading, endPoint: .trailing)
-                .frame(height: 3).clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
-            Text("1 week").font(.caption).foregroundStyle(Color.muted)
+        .sheet(item: $inspecting) { group in
+            MuscleHistorySheet(title: group.name, weeks: store.weeklySets(of: group.muscles), daysSince: store.daysSince(of: group.muscles))
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Muscles fill when trained and fade over a week")
     }
 }
 
@@ -411,11 +398,12 @@ struct JournalTab: View {
                 }
                 .padding(.vertical, 12).contentShape(Rectangle())
                 .contextMenu { menuItem("Delete", .trash2, role: .destructive) { deleting = record } }
+                .swipeToDelete(confirms: true) { deleting = record }
             }
         } header: {
             Heading("Sessions", count: store.history.count)
         } footer: {
-            Note("Touch and hold a session to delete it.")
+            Note("Swipe a session left, or touch and hold it, to delete it.")
         }
     }
 
@@ -572,10 +560,13 @@ struct ExercisePicker: View {
 
 // MARK: Settings
 
+extension WorkoutCommand: Identifiable { public var id: String { rawValue } }
+
 struct WorkoutSettingsScreen: View {
     @ObservedObject var store: WorkoutStore
     @Environment(\.dismiss) private var dismiss
     @State private var clearing = false
+    @State private var choosing: WorkoutCommand?
 
     var body: some View {
         NavigationStack {
@@ -608,6 +599,20 @@ struct WorkoutSettingsScreen: View {
             .confirmationDialog("Clear your journal?", isPresented: $clearing, titleVisibility: .visible) {
                 Button("Clear journal", role: .destructive, action: store.clearHistory)
             } message: { Text("Every logged workout is deleted. Your split stays.") }
+            .sheet(item: $choosing) { command in
+                ChoiceSheet(title: command.title, options: [nil] + WorkoutControls.choices.map(Optional.some),
+                            selected: store.controls.gesture(for: command), caption: command.detail,
+                            label: { gesture in
+                                if let gesture {
+                                    GestureIcon(gesture: gesture, size: 22).frame(width: 28)
+                                    Text(gesture.name).font(.bodyText)
+                                } else {
+                                    Color.clear.frame(width: 28, height: 1)
+                                    Text("None").font(.bodyText).foregroundStyle(Color.muted)
+                                }
+                            },
+                            choose: { store.setGesture($0, for: command) })
+            }
         }
         .tint(Color.ink)
     }
@@ -615,14 +620,7 @@ struct WorkoutSettingsScreen: View {
     private var gestures: some View {
         Block {
             ForEach(WorkoutCommand.allCases, id: \.self) { command in
-                Menu {
-                    ForEach(WorkoutControls.choices, id: \.self) { gesture in
-                        menuItem(gesture.name + (store.controls.gesture(for: command) == gesture ? " ✓" : ""), gesture: gesture) {
-                            store.setGesture(gesture, for: command)
-                        }
-                    }
-                    Button("None") { store.setGesture(nil, for: command) }
-                } label: {
+                Button { choosing = command } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(command.title).font(.bodyText)
@@ -635,6 +633,7 @@ struct WorkoutSettingsScreen: View {
                     .padding(.vertical, 14).contentShape(Rectangle())
                 }
                 .buttonStyle(PressRow())
+                .accessibilityHint("Chooses the gesture.")
                 if command != WorkoutCommand.allCases.last { Hairline(inset: 0) }
             }
         } header: {
@@ -789,104 +788,4 @@ extension View {
     func workoutList() -> some View {
         listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, 1)
     }
-}
-
-// MARK: Swipe to delete
-
-/// Swipe a row left to reveal a red square delete button. Past the button the row resists more
-/// and more, so it only goes so far; let go far enough out (or fling it) and the row slides away
-/// while the rows below close the gap. A swipe never opens the row.
-struct SwipeToDelete: ViewModifier {
-    let onDelete: () -> Void
-    @State private var offset: CGFloat = 0
-    @State private var settled: CGFloat = 0
-    @State private var width: CGFloat = 360
-    @State private var horizontal: Bool?
-    @State private var removing = false
-    private static let button: CGFloat = 44
-    /// How far the row slides to show the button: the button plus a gap.
-    private static let reveal: CGFloat = 64
-
-    /// Extra travel past the button, before resistance stops it.
-    private var stretch: CGFloat { max(80, width * 0.35) }
-    /// Letting go beyond this deletes.
-    private var deleteAt: CGFloat { Self.reveal + stretch * 0.5 }
-
-    func body(content: Content) -> some View {
-        ZStack(alignment: .trailing) {
-            content
-                .offset(x: offset)
-                // Mid-swipe and while open, the row's own taps are off, so letting go doesn't open it.
-                .allowsHitTesting(horizontal != true && settled == 0 && !removing)
-                .overlay {
-                    // While open, a tap on the row closes it instead of opening it.
-                    if settled != 0 { Color.clear.contentShape(Rectangle()).onTapGesture { close() } }
-                }
-            Button(action: delete) {
-                RoundedRectangle(cornerRadius: Metric.control, style: .continuous)
-                    .fill(Color.red)
-                    .frame(width: Self.button, height: Self.button)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            // Centred in the gap the row leaves; it follows the row out past the button.
-            .offset(x: min(0, (offset + Self.reveal) / 2))
-            .scaleEffect(0.6 + 0.4 * progress)
-            .opacity(removing ? 0 : progress)
-            .allowsHitTesting(progress > 0.5 && !removing)
-            .accessibilityHidden(true)
-        }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 16)
-                .onChanged { value in
-                    guard !removing else { return }
-                    if horizontal == nil { horizontal = abs(value.translation.width) > abs(value.translation.height) }
-                    guard horizontal == true else { return }
-                    offset = resisted(settled + value.translation.width)
-                }
-                .onEnded { value in
-                    defer { horizontal = nil }
-                    guard horizontal == true, !removing else { return }
-                    let fling = value.predictedEndTranslation.width - value.translation.width
-                    if -offset >= deleteAt || (fling < -400 && -offset > Self.reveal) { delete() }
-                    else if -offset > Self.reveal / 2 || (fling < -200 && settled == 0) { snap(-Self.reveal) }
-                    else { close() }
-                }
-        )
-        .accessibilityAction(named: "Delete", onDelete)
-        .sensoryFeedback(.impact(weight: .light), trigger: settled != 0)
-        .sensoryFeedback(.impact(weight: .medium), trigger: -offset >= deleteAt)
-    }
-
-    private var progress: CGFloat { min(1, max(0, -offset / Self.reveal)) }
-
-    /// Free up to the button, then rubber-banded so it approaches `reveal + stretch` and no further.
-    /// Rightward drags barely move.
-    private func resisted(_ x: CGFloat) -> CGFloat {
-        if x > 0 { return x * 0.15 }
-        let distance = -x
-        guard distance > Self.reveal else { return x }
-        let over = distance - Self.reveal
-        return -(Self.reveal + stretch * (1 - 1 / (over / stretch * 0.8 + 1)))
-    }
-
-    private func snap(_ x: CGFloat) {
-        withAnimation(.spring(duration: 0.35, bounce: 0.2)) { offset = x }
-        settled = x
-    }
-    private func close() { snap(0) }
-    private func delete() {
-        removing = true
-        withAnimation(.easeIn(duration: 0.22)) { offset = -width - Self.reveal }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-            // The rows below slide up into the space.
-            withAnimation(.spring(duration: 0.35, bounce: 0.1)) { onDelete() }
-            offset = 0; settled = 0; removing = false
-        }
-    }
-}
-
-extension View {
-    func swipeToDelete(_ onDelete: @escaping () -> Void) -> some View { modifier(SwipeToDelete(onDelete: onDelete)) }
 }

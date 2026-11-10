@@ -1,7 +1,7 @@
 // Converts lucide-react icon nodes into SVG path data for Swift.
 const fs = require('fs'), path = require('path');
 const [dir, out] = process.argv.slice(2);
-const names = 'arrow-left arrow-right arrow-up arrow-down rotate-3d move-3d house briefcase code-xml music gamepad-2 camera pen-tool globe star heart monitor headphones earth layers app-window list bell clipboard-copy vibrate hourglass plus chevron-right chevron-down check x clock-3 workflow hand ellipsis play trash-2 pencil circle circle-dot spline copy dumbbell layout-grid skip-forward rotate-ccw square settings audio-waveform calendar-days book-open search timer flame trending-up activity'.split(' ');
+const names = 'arrow-left arrow-right arrow-up arrow-down rotate-3d move-3d house briefcase code-xml music gamepad-2 camera pen-tool globe star heart monitor headphones earth layers app-window list bell clipboard-copy vibrate hourglass plus chevron-right chevron-down check x clock-3 workflow hand ellipsis play trash-2 pencil circle circle-dot spline copy dumbbell layout-grid skip-forward rotate-ccw square settings audio-waveform calendar-days book-open search timer flame trending-up activity chevron-left chevron-up qr-code share minus info terminal keyboard chart-line presentation graduation-cap message-circle mail mic video tv palette plane car bike footprints coffee moon sun leaf paw-print rocket'.split(' ');
 const n = v => +v;
 function toPath(tag, a) {
   switch (tag) {
@@ -17,7 +17,7 @@ function toPath(tag, a) {
   }
 }
 const camel = s => s.replace(/-(\w)/g, (_, c) => c.toUpperCase()).replace(/^(\d)/, '_$1');
-let swift = '// Generated from lucide-react 0.468.0 (ISC License), the icon set the Mac app uses.\n// Each icon is SVG path data in a 24×24 box, stroked at 1.5 with round caps and joins.\n// Regenerate with: node Tools/lucide-icons.js <mac app>/node_modules/lucide-react/dist/esm/icons RunesIOS/Views/Design/LucideData.swift\n\nenum LucideData {\n';
+let swift = '// Generated from lucide-react 0.468.0 (ISC License), the icon set the Mac app uses.\n// Each icon is SVG path data in a 24×24 box, stroked at 1.5 with round caps and joins.\n// Regenerate with: node Tools/lucide-icons.js <mac app>/node_modules/lucide-react/dist/esm/icons Shared/LucideData.swift\n\nenum LucideData {\n';
 for (const name of names) {
   const src = fs.readFileSync(path.join(dir, name + '.js'), 'utf8');
   const literal = src.slice(src.indexOf('[', src.indexOf('createLucideIcon(')), src.lastIndexOf(']') + 1);

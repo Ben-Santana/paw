@@ -17,11 +17,12 @@ struct HomeView: View {
     var actions = HomeActions()
     @State private var confirmDisconnect = false
     @State private var appeared = false
-    @AppStorage("home.pinnedApps") private var pinnedRaw = ""
+    @ObservedObject var pins = PinStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
+          VStack(spacing: 0) {
             header
             Spacer(minLength: 12)
             Button(action: ringTapped) {
@@ -59,9 +60,16 @@ struct HomeView: View {
             }
 
             Spacer(minLength: 20)
+          }
+          .blur(radius: replacing ? 14 : 0)
+          .opacity(replacing ? 0.35 : 1)
+          .allowsHitTesting(!replacing)
             pinnedApps
         }
+        .overlay(alignment: .bottom) { replacePrompt }
         .animation(.standard, value: status.issue)
+        .animation(.lively, value: pins.pinned)
+        .animation(.standard, value: pins.pending)
         .opacity(appeared || reduceMotion ? 1 : 0)
         .offset(y: appeared || reduceMotion ? 0 : 5)
         .onAppear { withAnimation(.entrance) { appeared = true } }
@@ -77,32 +85,17 @@ struct HomeView: View {
         HStack {
             batteryRing
             Spacer()
-            Button(action: actions.openApplications) {
-                LucideIcon(.layoutGrid, size: 20)
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Applications")
-            Button(action: actions.openMappings) {
-                LucideIcon(.hand, size: 20)
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Mappings")
-            Button(action: actions.openSettings) {
-                Image(systemName: "gearshape").font(.system(size: 17, weight: .regular))
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Settings")
+            IconButton(.layoutGrid, action: actions.openApplications).accessibilityLabel("Applications")
+            IconButton(.hand, action: actions.openMappings).accessibilityLabel("Mappings")
+            IconButton(.settings, action: actions.openSettings).accessibilityLabel("Settings")
         }
         .padding(.leading, Metric.gutter).padding(.trailing, 8).padding(.top, 4)
     }
 
-    /// Band battery as a hairline ring with its percentage, at the leading edge of the header.
+    /// Band battery as a hairline ring followed by its percentage, at the leading edge of the header.
     private var batteryRing: some View {
         let level = status.battery.map { Double(min(max($0, 0), 100)) / 100 }
         return HStack(spacing: 8) {
-            Text(status.battery.map { "\($0)%" } ?? "—")
-                .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
-                .contentTransition(.numericText())
             ZStack {
                 Circle().stroke(Color.rule, lineWidth: 2)
                 Circle().trim(from: 0, to: level ?? 0)
@@ -112,69 +105,63 @@ struct HomeView: View {
             }
             .frame(width: 20, height: 20)
             .animation(.standard, value: status.battery)
+            Text(status.battery.map { "\($0)%" } ?? "—")
+                .font(.caption).monospacedDigit().foregroundStyle(Color.muted)
+                .contentTransition(.numericText())
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Band battery")
         .accessibilityValue(status.battery.map { "\($0) percent" } ?? "Unknown")
     }
 
-    private var pins: [RunesApp?] {
-        let ids = pinnedRaw.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        return (0..<3).map { i in i < ids.count ? RunesApp(rawValue: ids[i]) : nil }
-    }
+    private var replacing: Bool { pins.pending != nil }
 
-    private func setPin(_ app: RunesApp?, at index: Int) {
-        var list = pins.map { $0?.rawValue ?? "" }
-        list[index] = app?.rawValue ?? ""
-        pinnedRaw = list.joined(separator: ",")
-    }
-
-    /// Three slots for favourite applications.
+    /// Pinned applications, centred under the ring. Empty until the user holds an app
+    /// in Applications and pins it; three at most.
     private var pinnedApps: some View {
         HStack(spacing: 12) {
-            ForEach(0..<3, id: \.self) { i in pinSlot(i) }
+            ForEach(Array(pins.pinned.enumerated()), id: \.element) { index, app in
+                pinTile(app, index: index)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
         }
+        .frame(maxWidth: .infinity, minHeight: 72)
         .padding(.horizontal, Metric.gutter).padding(.bottom, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(pins.pinned.isEmpty ? "No pinned apps" : "Pinned apps")
     }
 
-    @ViewBuilder private func pinSlot(_ index: Int) -> some View {
-        if let app = pins[index] {
-            Button { actions.openApp(app) } label: {
-                VStack(spacing: 8) {
-                    LucideIcon(app.icon, size: 20)
-                    Text(app.title).font(.caption).lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, minHeight: 72)
-                .panel()
-                .contentShape(Rectangle())
+    private func pinTile(_ app: RunesApp, index: Int) -> some View {
+        Button {
+            if replacing { pins.replace(app) } else { actions.openApp(app) }
+        } label: {
+            VStack(spacing: 8) {
+                LucideIcon(app.icon, size: 20)
+                Text(app.title).font(.caption).lineLimit(1)
             }
-            .buttonStyle(RingButtonStyle())
-            .contextMenu {
-                Menu("Replace") { appChoices(index) }
-                Button("Unpin", role: .destructive) { setPin(nil, at: index) }
-            }
-            .accessibilityLabel(app.title)
-            .accessibilityHint("Opens the app. Touch and hold to unpin.")
-        } else {
-            Menu { appChoices(index) } label: {
-                VStack(spacing: 6) {
-                    Image(systemName: "plus").font(.system(size: 15, weight: .regular))
-                    Text("Pin app").font(.caption)
-                }
-                .foregroundStyle(Color.muted)
-                .frame(maxWidth: .infinity, minHeight: 72)
-                .overlay(RoundedRectangle(cornerRadius: Metric.panel)
-                    .strokeBorder(Color.rule, style: StrokeStyle(lineWidth: Metric.hairline, dash: [4, 3])))
-                .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Empty slot \(index + 1)")
-            .accessibilityHint("Pins an application here.")
+            .frame(width: 96, height: 72)
+            .panel()
+            .overlay(RoundedRectangle(cornerRadius: Metric.panel)
+                .strokeBorder(Color.ink, lineWidth: Metric.hairline).opacity(replacing ? 1 : 0))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(RingButtonStyle())
+        .jiggle(replacing, index: index)
+        .accessibilityLabel(app.title)
+        .accessibilityHint(replacing ? "Replaces this pin with \(pins.pending?.title ?? "the new app")." : "Opens the app.")
     }
 
-    @ViewBuilder private func appChoices(_ index: Int) -> some View {
-        ForEach(RunesApp.allCases) { app in
-            Button { setPin(app, at: index) } label: { Label(app.title, systemImage: "pin") }
+    /// While a fourth app waits, the rest of the screen blurs and the three pins shake.
+    @ViewBuilder private var replacePrompt: some View {
+        if let pending = pins.pending {
+            VStack(spacing: 14) {
+                Text("Choose a pin for \(pending.title) to replace")
+                    .font(.bodyText).foregroundStyle(Color.muted).multilineTextAlignment(.center)
+                Button("Cancel") { pins.cancelPending() }.buttonStyle(.quiet)
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.bottom, 104)
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
 
@@ -218,9 +205,9 @@ private struct RingButtonStyle: ButtonStyle {
 
 /// Applications that can be pinned to the home screen.
 enum RunesApp: String, CaseIterable, Identifiable {
-    case workouts
+    case workouts, score
     var id: String { rawValue }
-    var title: String { switch self { case .workouts: "Workouts" } }
-    var icon: Lucide { switch self { case .workouts: .dumbbell } }
-    var route: AppRoute { switch self { case .workouts: .workouts } }
+    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score" } }
+    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2 } }
+    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score } }
 }

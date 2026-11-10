@@ -364,6 +364,11 @@ struct Mapping: Codable, Identifiable, Hashable, Sendable {
     /// Combos with rotation or movement steps need the band's motion streams.
     var usesMotion: Bool { steps?.contains { $0.gesture.isMotion || $0.gesture.isAir } ?? false }
     var hasActions: Bool { !actions.isEmpty }
+    /// Whether the gesture, or any step of the combo, is one of `gestures`.
+    func uses(_ gestures: Set<GestureKind>) -> Bool {
+        if let steps { return steps.contains { gestures.contains($0.gesture) } }
+        return motion.map(gestures.contains) ?? false
+    }
     /// Live only when enabled, complete and valid.
     var isLive: Bool {
         guard enabled, ComboRules.actions.contains(actions.count), actions.allSatisfy({ $0.problem == nil }) else { return false }
@@ -391,7 +396,7 @@ struct Mapping: Codable, Identifiable, Hashable, Sendable {
 
 struct MappingProfile: Codable, Identifiable, Hashable, Sendable {
     /// The Mac's profile icon keys (MenuIcons.tsx `profileIcons`).
-    static let icons = ["home", "work", "code", "music", "game", "camera", "design", "globe", "star", "heart", "monitor", "headphones"]
+    static let icons = ProfileIcon.keys
     var id: String
     var name: String
     var icon: String
@@ -404,7 +409,7 @@ struct MappingProfile: Codable, Identifiable, Hashable, Sendable {
     /// Every motion has a row; combos follow in their saved order. Invalid entries are dropped.
     func normalized() -> MappingProfile {
         var copy = self
-        if !Self.icons.contains(icon) { copy.icon = "home" }
+        if !Self.icons.contains(icon) { copy.icon = ProfileIcon.fallback }
         let gestures = GestureKind.motions.map { kind in mappings.first { $0.id == kind.rawValue } ?? .gesture(kind) }
         let combos = mappings.filter { $0.id.hasPrefix("combo-") && $0.steps != nil }
         copy.mappings = gestures + combos

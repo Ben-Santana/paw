@@ -7,6 +7,10 @@ final class BandProtocol {
         case ready, reply(operation: String, payload: Data), ownership(OwnershipStep), enrolled(BandIdentity)
         case motion(kind: RelayWire.Event.Kind, values: [Double], sequence: UInt64, timestamp: UInt64)
         case gesture(finger: UInt64, action: UInt64, derived: UInt64, synthetic: Bool, sequence: UInt64, timestamp: UInt64)
+        /// One EMG batch: 16 samples × 8 channels, sample-major, raw 16-bit ADC counts.
+        case emg(values: [UInt16], sequence: UInt64, timestamp: UInt64)
+        /// The band would not provide EMG. The connection stays up; EMG is simply left off.
+        case emgUnavailable(String)
     }
     private struct Pending { let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data? }
     private var identity: BandIdentity?
@@ -19,7 +23,7 @@ final class BandProtocol {
     private let clear = DataXReceiver(), frames = DataXReceiver()
     private var types: [UInt16: UInt32] = [:], pending: [UInt16: Pending] = [:], opened: Set<UInt16> = []
     private var nextID: UInt64 = 0
-    private var hostTrusted = false, bandTrusted = false, endSent = false, gesturesEnabled = false, gyroEnabled = false, orientationEnabled = false
+    private var hostTrusted = false, bandTrusted = false, endSent = false, gesturesEnabled = false, gyroEnabled = false, orientationEnabled = false, emgEnabled = false
     private(set) var stage = "idle"
     private var deadline = TimeInterval.infinity
     init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil) throws {
@@ -157,6 +161,12 @@ final class BandProtocol {
             let f = try Fields(packet.payload), id = try f.integer(1)
             guard let p = pending[packet.channel], p.id == id else { return (Data(), []) }
             pending[packet.channel] = nil
+            // EMG is optional: a refused configuration read is reported, never fatal.
+            if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
+            let wantsEMG = try p.flags.map { try Fields($0).integer(2) == 1 } ?? false
+            if try f.integer(2) != 1, wantsEMG {
+                return (Data(), [.emgUnavailable("Band rejected a stream request that included EMG.")])
+            }
             guard try f.integer(2) == 1 else { throw BandError.wire("Band rejected \(p.operation).") }
             if p.operation == "device_info" {
                 _ = try Fields(f.bytes(4)); stage = "ready"; deadline = .infinity
@@ -164,10 +174,14 @@ final class BandProtocol {
             }
             if let flags = p.flags {
                 let wanted = try Fields(flags), accepted = try Fields(f.bytes(5))
+                if try wanted.integer(2) == 1, try accepted.integer(2, default: 0) != 1 {
+                    return (Data(), [.emgUnavailable("Band acknowledged streams without EMG.")])
+                }
                 for n in [2, 3, 6, 8] { guard try accepted.integer(n) == wanted.integer(n) else { throw BandError.wire("Band stream acknowledgement differs from request.") } }
                 gesturesEnabled = try wanted.integer(3) == 1
                 gyroEnabled = try wanted.integer(6) == 1
                 orientationEnabled = try wanted.integer(8) == 1
+                emgEnabled = try wanted.integer(2) == 1
             }
             return (Data(), [.reply(operation: p.operation, payload: packet.payload)])
         }
@@ -184,6 +198,10 @@ final class BandProtocol {
             let f = try Fields(packet.payload), bytes = try f.bytes(3, count: 16)
             return (Data(), [.motion(kind: .orientation, values: try Self.orientation(bytes), sequence: try f.integer(1), timestamp: try f.integer(2))])
         }
+        if stage == "ready", emgEnabled, kind == 0x0200020a {
+            let f = try Fields(packet.payload), bytes = try f.bytes(3, count: 256)
+            return (Data(), [.emg(values: EMG.decode(bytes), sequence: try f.integer(1), timestamp: try f.integer(2))])
+        }
         return (Data(), [])
     }
     private func result(_ packet: Frame, kind: UInt32) throws -> (Data, [Signal]) {
@@ -194,11 +212,15 @@ final class BandProtocol {
             hostTrusted = true; return (try maybeEnd(), [])
         }
         if stage != "ready" { throw BandError.authentication("Band setup rejected (\(String(kind, radix: 16))).") }
+        if let p = pending[channel], p.operation == "emg_configuration" {
+            pending[channel] = nil
+            return (Data(), [.emgUnavailable("Band closed the EMG configuration service (\(String(kind, radix: 16))).")])
+        }
         if pending[channel] != nil || [5, 6, 7].contains(channel) { throw BandError.wire("Band service closed (\(String(kind, radix: 16))).") }
         return (Data(), [])
     }
-    static func streamFlags(gyro: Bool, orientation: Bool) -> Data {
-        PB.field(2, 0) + PB.field(3, 1) + PB.field(6, gyro ? 1 : 0) + PB.field(8, orientation ? 1 : 0)
+    static func streamFlags(gyro: Bool, orientation: Bool, emg: Bool = false) -> Data {
+        PB.field(2, emg ? 1 : 0) + PB.field(3, 1) + PB.field(6, gyro ? 1 : 0) + PB.field(8, orientation ? 1 : 0)
     }
     static func gyro(_ bytes: Data) -> [Double] {
         (0..<3).map { index in

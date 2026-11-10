@@ -10,10 +10,12 @@ struct MappingsScreen: View {
     @ObservedObject var store: MappingStore
     var done: () -> Void = {}
     @State private var path: [String] = []
-    @State private var renaming: MappingProfile?
-    @State private var newName = ""
-    @State private var addingProfile = false
+    @State private var editingProfile: ProfileEdit?
     @State private var deleting: MappingProfile?
+    private enum ProfileEdit: Identifiable {
+        case new, rename(MappingProfile)
+        var id: String { if case .rename(let p) = self { return p.id } else { return "new" } }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -25,7 +27,7 @@ struct MappingsScreen: View {
                         ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
                             if index > 0 { RowDivider() }
                             NavigationLink(value: mapping.id) {
-                                MappingRow(mapping: mapping, profiles: store.library.profiles, flashed: flashed(mapping.id))
+                                MappingRow(mapping: mapping, profiles: store.library.profiles, flashed: flashed(mapping.id), suspended: store.isSuspended(mapping))
                             }
                             .buttonStyle(.plain)
                         }
@@ -33,9 +35,10 @@ struct MappingsScreen: View {
                     MappingGroup("Combos", caption: "Several gestures in a row. A combo owns its gestures, so their own mappings don’t also run.") {
                         ForEach(Array(store.active.combos.enumerated()), id: \.element.id) { index, mapping in
                             NavigationLink(value: mapping.id) {
-                                MappingRow(mapping: mapping, title: comboTitle(mapping, index), profiles: store.library.profiles, flashed: flashed(mapping.id))
+                                MappingRow(mapping: mapping, title: comboTitle(mapping, index), profiles: store.library.profiles, flashed: flashed(mapping.id), suspended: store.isSuspended(mapping))
                             }
                             .buttonStyle(.plain)
+                            .swipeToDelete { store.remove(mappingID: mapping.id) }
                             RowDivider()
                         }
                         Button {
@@ -47,7 +50,7 @@ struct MappingsScreen: View {
                                 Text("Add combo").font(.bodyText)
                                 Spacer()
                             }
-                            .padding(.horizontal, 14).frame(minHeight: 52).contentShape(Rectangle())
+                            .panelRow(height: Metric.rowTall)
                         }
                         .buttonStyle(.plain)
                     }
@@ -56,23 +59,24 @@ struct MappingsScreen: View {
             }
             .page()
             .navigationTitle("Mappings").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done).font(.label) } }
+            .toolbar { BackToolbarItem(action: done) }
             .navigationDestination(for: String.self) { id in
                 MappingEditor(store: store, mappingID: id, title: title(for: id))
             }
-            .alert("Rename profile", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-                TextField("Name", text: $newName)
-                Button("Save") { if let p = renaming { store.renameProfile(p.id, to: newName) } }
-                Button("Cancel", role: .cancel) {}
-            }
-            .alert("New profile", isPresented: $addingProfile) {
-                TextField("Name", text: $newName)
-                Button("Add") {
-                    let name = newName.trimmingCharacters(in: .whitespaces)
-                    store.addProfile(name: name.isEmpty ? "Profile \(store.library.profiles.count + 1)" : name, icon: MappingProfile.icons[store.library.profiles.count % MappingProfile.icons.count])
+            .sheet(item: $editingProfile) { edit in
+                switch edit {
+                case .new:
+                    ProfileSheet(title: "New profile", name: "", icon: MappingProfile.icons[store.library.profiles.count % MappingProfile.icons.count],
+                                 caption: "Profiles hold their own mappings. Switch between them here or with a gesture.") { name, icon in
+                        store.addProfile(name: name.isEmpty ? "Profile \(store.library.profiles.count + 1)" : name, icon: icon)
+                    }
+                case .rename(let profile):
+                    ProfileSheet(title: "Edit profile", name: profile.name, icon: profile.icon) { name, icon in
+                        if !name.isEmpty, name != profile.name { store.renameProfile(profile.id, to: name) }
+                        if icon != profile.icon { store.setIcon(profile.id, icon) }
+                    }
                 }
-                Button("Cancel", role: .cancel) {}
-            } message: { Text("Profiles hold their own mappings. Switch between them here or with a gesture.") }
+            }
             .confirmationDialog(deleting.map { "Delete \($0.name)?" } ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible, presenting: deleting) { p in
                 Button("Delete profile", role: .destructive) { store.deleteProfile(p.id) }
             } message: { _ in Text("Its gesture mappings and combos are removed from this phone.") }
@@ -100,7 +104,7 @@ struct MappingsScreen: View {
                         let active = profile.id == store.library.activeID
                         Button { store.selectProfile(profile.id) } label: {
                             HStack(spacing: 6) {
-                                LucideIcon(Lucide.profile(profile.icon), size: 15)
+                                LucideIcon(profile: profile.icon, size: 15)
                                 Text(profile.name).font(.label).lineLimit(1)
                             }
                             .padding(.horizontal, 12).frame(minHeight: 36)
@@ -111,19 +115,14 @@ struct MappingsScreen: View {
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(active ? .isSelected : [])
                         .contextMenu {
-                            menuItem("Rename", .pencil) { newName = profile.name; renaming = profile }
-                            Menu {
-                                ForEach(MappingProfile.icons, id: \.self) { icon in
-                                    menuItem(icon.capitalized + (icon == profile.icon ? " ✓" : ""), Lucide.profile(icon)) { store.setIcon(profile.id, icon) }
-                                }
-                            } label: { Label { Text("Icon") } icon: { Lucide.profile(profile.icon).image(size: 18) } }
+                            menuItem("Edit name and icon", .pencil) { editingProfile = .rename(profile) }
                             menuItem("Duplicate", .copy) { store.duplicateProfile(profile.id) }
                             if store.library.profiles.count > 1 {
                                 menuItem("Delete", .trash2, role: .destructive) { deleting = profile }
                             }
                         }
                     }
-                    Button { newName = ""; addingProfile = true } label: {
+                    Button { editingProfile = .new } label: {
                         LucideIcon(.plus, size: 16)
                             .frame(width: 36, height: 36)
                             .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
@@ -133,7 +132,7 @@ struct MappingsScreen: View {
                 }
                 .padding(.vertical, 1)
             }
-            Text("Touch and hold a profile to rename, change its icon or delete it.")
+            Text("Touch and hold a profile to edit, duplicate or delete it.")
                 .font(.caption).foregroundStyle(Color.muted).padding(.leading, 2)
         }
     }
@@ -146,6 +145,9 @@ private struct MappingRow: View {
     var title: String?
     let profiles: [MappingProfile]
     var flashed = false
+    /// A running app holds this mapping's gesture, so it is off for now.
+    var suspended = false
+    private var on: Bool { mapping.isLive && !suspended }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -163,17 +165,18 @@ private struct MappingRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Circle().fill(mapping.isLive ? Color.ink : Color.clear).frame(width: 6, height: 6)
-                .overlay(Circle().strokeBorder(Color.faint, lineWidth: mapping.isLive ? 0 : 1))
+            Circle().fill(on ? Color.ink : Color.clear).frame(width: 6, height: 6)
+                .overlay(Circle().strokeBorder(Color.faint, lineWidth: on ? 0 : 1))
                 .accessibilityHidden(true)
-            LucideIcon(.chevronRight, size: 16).foregroundStyle(Color.muted)
+            Chevron()
         }
-        .padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 52)
+        .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(minHeight: Metric.rowTall)
         .background(flashed ? Color.soft : Color.clear)
         .animation(.standard, value: flashed)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityValue(mapping.isLive ? "On" : "Off")
+        .accessibilityValue(on ? "On" : "Off")
+        .animation(.standard, value: suspended)
     }
 
     private var summary: String {
@@ -182,6 +185,7 @@ private struct MappingRow: View {
         let text = mapping.actions.count == 1 ? first : "\(first) + \(mapping.actions.count - 1) more"
         if !mapping.enabled { return "Off · \(text)" }
         if !mapping.isLive { return "Needs attention · \(text)" }
+        if suspended { return "Off during the game · \(text)" }
         return text
     }
 }
@@ -215,7 +219,7 @@ private struct StepChips: View {
                         if index > 0 { LucideIcon(.chevronRight, size: 10).foregroundStyle(Color.faint) }
                         StepIcon(step: step, size: compact ? 15 : 18)
                             .padding(.horizontal, 6).frame(minHeight: compact ? 22 : 28)
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                            .overlay(RoundedRectangle(cornerRadius: Metric.chip).strokeBorder(Color.rule, lineWidth: Metric.hairline))
                     }
                 }
             }
@@ -246,7 +250,7 @@ private struct LiveStrip: View {
                 Spacer(minLength: 0)
             }
             .animation(.standard, value: recent)
-            .padding(.horizontal, 14).frame(minHeight: 52)
+            .padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowTall)
             .panel()
         }
     }
@@ -260,6 +264,8 @@ struct MappingEditor: View {
     let title: String
     @Environment(\.dismiss) private var dismiss
     @State private var editingAction: Int?
+    /// The step open in the inspector sheet.
+    @State private var editingStep: Int?
     /// The air step whose shape is being edited; the step count means a new step.
     @State private var editingAir: Int?
     @State private var recording = false
@@ -285,20 +291,20 @@ struct MappingEditor: View {
                                     Text(liveText(mapping)).font(.caption).foregroundStyle(Color.muted)
                                 }
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 10)
                             RowDivider()
                             Button { store.run(mapping.actions) } label: {
                                 Label { Text("Run now") } icon: { LucideIcon(.play, size: 18) }.font(.bodyText)
-                                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                                    .padding(.horizontal, 14).contentShape(Rectangle())
+                                    .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
+                                    .padding(.horizontal, Metric.inset).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .disabled(mapping.actions.isEmpty || mapping.actions.contains { $0.problem != nil })
                             RowDivider()
                             Button(role: .destructive) { confirmDelete = true } label: {
                                 Text(mapping.isCombo ? "Delete combo" : "Clear mapping").font(.bodyText)
-                                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                                    .padding(.horizontal, 14).contentShape(Rectangle())
+                                    .frame(maxWidth: .infinity, minHeight: Metric.row, alignment: .leading)
+                                    .padding(.horizontal, Metric.inset).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .disabled(!mapping.isCombo && mapping.actions.isEmpty)
@@ -392,7 +398,7 @@ struct MappingEditor: View {
             ? "Make them in this order. While a finger is held there’s no time limit. Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
             : "Make them in this order. While a finger is held there’s no time limit.")) {
             TextField("Combo name (optional)", text: Binding(get: { mapping.name ?? "" }, set: { text in edit { $0.name = text.isEmpty ? nil : String(text.prefix(40)) } }))
-                .font(.bodyText).padding(.horizontal, 14).frame(minHeight: 48)
+                .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
             RowDivider()
             VStack(alignment: .leading, spacing: 10) {
                 if steps.isEmpty {
@@ -401,27 +407,7 @@ struct MappingEditor: View {
                 } else {
                     FlowLayout(spacing: 6) {
                         ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                            Menu {
-                                Text(step.name)
-                                if step.gesture.isMotion {
-                                    Picker("Axis", selection: Binding(get: { step.axis ?? .x }, set: { axis in edit { $0.steps?[index].axis = axis } })) {
-                                        ForEach(Axis.allCases, id: \.self) { Text("Axis \($0.rawValue.uppercased())").tag($0) }
-                                    }
-                                    .pickerStyle(.menu)
-                                }
-                                if step.gesture == .rotation {
-                                    Picker("Direction", selection: Binding(get: { step.direction ?? .any }, set: { d in edit { $0.steps?[index].direction = d } })) {
-                                        Text("← Left").tag(RotationDirection.left)
-                                        Text("→ Right").tag(RotationDirection.right)
-                                        Text("↔ Either way").tag(RotationDirection.any)
-                                    }
-                                    .pickerStyle(.menu)
-                                }
-                                if step.gesture.isAir { menuItem("Edit shape", .pencil) { editingAir = index } }
-                                if index > 0 { menuItem("Move earlier", .arrowLeft) { moveStep(index, by: -1) } }
-                                if index < steps.count - 1 { menuItem("Move later", .arrowRight) { moveStep(index, by: 1) } }
-                                menuItem("Remove", .trash2, role: .destructive) { edit { $0.steps?.remove(at: index) } }
-                            } label: {
+                            Button { editingStep = index } label: {
                                 HStack(spacing: 6) {
                                     Text("\(index + 1)").font(.caption).foregroundStyle(Color.muted).monospacedDigit()
                                     StepIcon(step: step, size: 18)
@@ -429,9 +415,13 @@ struct MappingEditor: View {
                                 }
                                 .padding(.horizontal, 10).frame(minHeight: 36)
                                 .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(PressRow())
+                            .id(step)
+                            .transition(.scale(scale: 0.9).combined(with: .opacity))
                             .accessibilityLabel("Step \(index + 1), \(step.name)")
+                            .accessibilityHint("Opens the step.")
                         }
                     }
                 }
@@ -461,26 +451,34 @@ struct MappingEditor: View {
                     }
                 } label: {
                     Label { Text("Add step") } icon: { LucideIcon(.plus, size: 18) }.font(.bodyText)
-                        .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        .frame(maxWidth: .infinity, minHeight: Metric.row).contentShape(Rectangle())
                 }
                 .disabled(steps.count >= ComboRules.steps.upperBound)
                 Rectangle().fill(Color.rule).frame(width: Metric.hairline).padding(.vertical, 10)
                 Button { recording ? stopRecording() : startRecording() } label: {
                     Label { Text(recording ? "Stop" : "Record") } icon: { LucideIcon(recording ? .x : .circleDot, size: 18) }.font(.bodyText)
-                        .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+                        .frame(maxWidth: .infinity, minHeight: Metric.row).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
             RowDivider()
-            HStack {
-                Text("Time between steps").font(.bodyText)
-                Spacer()
-                Picker("Time between steps", selection: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } })) {
-                    ForEach(ComboRules.times, id: \.self) { ms in Text(ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000)).tag(ms) }
-                }
-                .labelsHidden().font(.bodyText)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Time between steps").font(.bodyText).padding(.horizontal, Metric.inset)
+                ChipRow(selection: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
+                        options: ComboRules.times) { ms in ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000) }
+                    .accessibilityLabel("Time between steps")
             }
-            .padding(.leading, 14).padding(.trailing, 4).frame(minHeight: 48)
+            .padding(.vertical, 12)
+        }
+        .animation(.standard, value: steps)
+        .sheet(isPresented: Binding(get: { editingStep != nil }, set: { if !$0 { editingStep = nil } })) {
+            if let index = editingStep, let steps = mapping.steps, steps.indices.contains(index) {
+                StepSheet(step: steps[index], index: index, count: steps.count,
+                          update: { updated in edit { $0.steps?[index] = updated } },
+                          move: { offset in moveStep(index, by: offset); editingStep = index + offset },
+                          editShape: { editingAir = index },
+                          remove: { edit { $0.steps?.remove(at: index) } })
+            }
         }
     }
 
@@ -528,7 +526,7 @@ struct MappingEditor: View {
                     Button { editingAction = index } label: {
                         HStack(spacing: 12) {
                             Text("\(index + 1)").font(.caption).foregroundStyle(Color.muted).monospacedDigit().frame(width: 14)
-                            LucideIcon(action.icon(profiles: store.library.profiles), size: 20).frame(width: 22)
+                            LucideIcon(path: action.iconPath(profiles: store.library.profiles), size: 20).frame(width: 22)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.label(profiles: store.library.profiles)).font(.bodyText).lineLimit(1)
                                 if let problem = action.problem {
@@ -554,7 +552,8 @@ struct MappingEditor: View {
                     }
                     .accessibilityLabel("More for action \(index + 1)")
                 }
-                .padding(.leading, 14).padding(.trailing, 4).frame(minHeight: 52)
+                .padding(.leading, Metric.inset).padding(.trailing, 4).frame(minHeight: Metric.rowTall)
+                .swipeToDelete { edit { $0.actions.remove(at: index) } }
                 RowDivider()
             }
             Menu {
@@ -571,7 +570,7 @@ struct MappingEditor: View {
                     Text(mapping.actions.isEmpty ? "Choose an action" : "Add another action").font(.bodyText)
                     Spacer()
                 }
-                .padding(.horizontal, 14).frame(minHeight: 52).contentShape(Rectangle())
+                .padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowTall).contentShape(Rectangle())
             }
             .disabled(mapping.actions.count >= ComboRules.actions.upperBound)
         }
@@ -677,12 +676,12 @@ private struct ActionEditor: View {
                             Button { headers.removeAll { $0.id == header.id } } label: { LucideIcon(.x, size: 16).foregroundStyle(Color.muted).frame(width: 28, height: 36) }
                                 .buttonStyle(.plain).accessibilityLabel("Remove header")
                         }
-                        .font(.bodyText).padding(.horizontal, 14).frame(minHeight: 44)
+                        .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowDense)
                         RowDivider()
                     }
                     Button { headers.append(Header(name: "", value: "")) } label: {
-                        Label { Text("Add header") } icon: { LucideIcon(.plus, size: 18) }.font(.bodyText).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            .padding(.horizontal, 14).contentShape(Rectangle())
+                        Label { Text("Add header") } icon: { LucideIcon(.plus, size: 18) }.font(.bodyText).frame(maxWidth: .infinity, minHeight: Metric.rowDense, alignment: .leading)
+                            .padding(.horizontal, Metric.inset).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -691,13 +690,17 @@ private struct ActionEditor: View {
             if method != .GET {
                 field("Body", nil) {
                     TextEditor(text: Binding(get: { body }, set: { action = .apiCall(method: method, url: url, headers: [:], body: $0, timeoutMs: timeout) }))
-                        .font(.system(.footnote, design: .monospaced)).frame(minHeight: 110).scrollContentBackground(.hidden)
+                        .font(.code).frame(minHeight: 110).scrollContentBackground(.hidden)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
             }
-            field("Timeout", nil) {
-                Stepper("\(timeout / 1000) seconds", value: Binding(get: { timeout / 1000 }, set: { action = .apiCall(method: method, url: url, headers: [:], body: body, timeoutMs: $0 * 1000) }), in: 1...120)
-                    .font(.bodyText)
+            field("Timeout", "How long to wait for a reply") {
+                HStack {
+                    Text("Give up after").font(.bodyText)
+                    Spacer()
+                    NumberChip(int: Binding(get: { timeout / 1000 }, set: { action = .apiCall(method: method, url: url, headers: [:], body: body, timeoutMs: $0 * 1000) }),
+                               range: 1...120, unit: "s", label: "Timeout")
+                }
             }
         case .notify(let title, let body):
             field("Title", nil) { TextField("Runes", text: Binding(get: { title }, set: { action = .notify(title: $0, body: body) })) }
@@ -713,22 +716,29 @@ private struct ActionEditor: View {
             }
         case .wait(let ms):
             field("Duration", "Pauses before the next linked action") {
-                Stepper(String(format: "%.1f seconds", Double(ms) / 1000), value: Binding(get: { ms }, set: { action = .wait(ms: $0) }), in: 100...30_000, step: 100)
-                    .font(.bodyText)
+                HStack {
+                    Text("Wait").font(.bodyText)
+                    Spacer()
+                    NumberChip(value: Binding(get: { Double(ms) / 1000 }, set: { action = .wait(ms: Int(($0 * 1000).rounded())) }),
+                               range: 0.1...30, step: 0.1, decimals: true, unit: "s", label: "Wait duration")
+                }
             }
         case .changeProfile(let id):
-            field("Profile", nil) {
-                Picker("Profile", selection: Binding(get: { id }, set: { action = .changeProfile($0) })) {
-                    ForEach(profiles) { p in Label { Text(p.name) } icon: { Lucide.profile(p.icon).image(size: 18) }.tag(p.id) }
-                }
-                .pickerStyle(.inline).labelsHidden()
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Profile")
+                ChoiceList(options: profiles.map(\.id), selected: id, label: { pid in
+                    let p = profiles.first { $0.id == pid }
+                    HStack(spacing: 12) {
+                        LucideIcon(profile: p?.icon ?? ProfileIcon.fallback, size: 18)
+                        Text(p?.name ?? "Profile").font(.bodyText)
+                    }
+                }, choose: { action = .changeProfile($0) })
             }
         case .spotify(let command):
-            field("Command", "Controls whatever Spotify is playing on any device, even while your phone is locked") {
-                Picker("Command", selection: Binding(get: { command }, set: { action = .spotify($0) })) {
-                    ForEach(SpotifyCommand.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.inline).labelsHidden()
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("Command")
+                ChoiceList(options: SpotifyCommand.allCases, selected: command, label: { Text($0.title).font(.bodyText) }, choose: { action = .spotify($0) })
+                Text("Controls whatever Spotify is playing on any device, even while your phone is locked").font(.caption).foregroundStyle(Color.muted)
             }
             SpotifyAccountSection(client: spotify)
         case .moveProfile(let direction):
@@ -745,7 +755,7 @@ private struct ActionEditor: View {
     private func field<Content: View>(_ title: String, _ hint: String?, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(title)
-            content().font(.bodyText).padding(.horizontal, 14).padding(.vertical, 12).panel()
+            content().font(.bodyText).padding(.horizontal, Metric.inset).padding(.vertical, 12).panel()
             if let hint { Text(hint).font(.caption).foregroundStyle(Color.muted) }
         }
     }
@@ -768,7 +778,7 @@ private struct SpotifyAccountSection: View {
                         Spacer()
                         Button("Disconnect") { client.disconnect() }.font(.label)
                     }
-                    .padding(.horizontal, 14).frame(minHeight: 48)
+                    .padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
                 } else {
                     Button {
                         working = true; error = nil
@@ -778,7 +788,7 @@ private struct SpotifyAccountSection: View {
                         }
                     } label: {
                         HStack { Text(working ? "Connecting…" : "Connect Spotify").font(.bodyText); Spacer(); LucideIcon(.chevronRight, size: 16) }
-                            .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
+                            .padding(.horizontal, Metric.inset).frame(minHeight: Metric.row).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).disabled(working)
                 }
@@ -792,27 +802,123 @@ private struct SpotifyAccountSection: View {
     }
 }
 
+// MARK: Profile sheet
+
+/// Name and icon for a new or existing profile, in the app's own type instead of a system alert.
+private struct ProfileSheet: View {
+    let title: String
+    @State var name: String
+    @State var icon: String
+    var caption: String? = nil
+    let save: (String, String) -> Void
+    @FocusState private var naming: Bool
+
+    var body: some View {
+        FormSheet(title, done: "Save", save: { save(name.trimmingCharacters(in: .whitespaces), icon) }) {
+            VStack(alignment: .leading, spacing: 28) {
+                TitleField(prompt: "Profile name", text: $name, focus: $naming)
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel("Icon")
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
+                        ForEach(MappingProfile.icons, id: \.self) { key in
+                            let on = key == icon
+                            Button { withAnimation(.standard) { icon = key } } label: {
+                                LucideIcon(profile: key, size: 20)
+                                    .foregroundStyle(on ? Color.paper : Color.ink)
+                                    .frame(maxWidth: .infinity, minHeight: Metric.row)
+                                    .background(on ? Color.ink : Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
+                                    .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: on ? 0 : Metric.hairline))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressRow())
+                            .accessibilityLabel(ProfileIcon.label(key))
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                        }
+                    }
+                    .sensoryFeedback(.selection, trigger: icon)
+                }
+                if let caption { Text(caption).font(.caption).foregroundStyle(Color.muted) }
+            }
+        }
+        .presentationDetents([.height(600), .large])
+        .presentationDragIndicator(.hidden)
+        .task { try? await Task.sleep(for: .milliseconds(350)); naming = name.isEmpty }
+    }
+}
+
+// MARK: Step sheet
+
+/// One combo step up close: its axis and direction, its place in the order, and removal.
+private struct StepSheet: View {
+    let step: ComboStep
+    let index: Int
+    let count: Int
+    let update: (ComboStep) -> Void
+    let move: (Int) -> Void
+    let editShape: () -> Void
+    let remove: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 28) {
+                    VStack(spacing: 10) {
+                        StepIcon(step: step, size: 40).frame(height: 44)
+                        Text(step.name).font(.heading).contentTransition(.opacity)
+                        Text("Step \(index + 1) of \(count)").font(.caption).foregroundStyle(Color.muted).contentTransition(.numericText())
+                    }
+                    .frame(maxWidth: .infinity).padding(.top, 4)
+                    .animation(.standard, value: step)
+                    .animation(.standard, value: index)
+                    if step.gesture.isMotion {
+                        Block {
+                            HairlineSegments(selection: Binding(get: { step.axis ?? .x }, set: { var s = step; s.axis = $0; update(s) }),
+                                             options: Axis.allCases, title: \.label)
+                        } header: { Heading("Axis") }
+                    }
+                    if step.gesture == .rotation {
+                        Block {
+                            HairlineSegments(selection: Binding(get: { step.direction ?? .any }, set: { var s = step; s.direction = $0; update(s) }),
+                                             options: RotationDirection.allCases, title: \.label)
+                        } header: { Heading("Direction") }
+                    }
+                    if step.gesture.isAir {
+                        Button { dismiss(); editShape() } label: { Label { Text("Edit shape") } icon: { LucideIcon(.pencil, size: 16) } }
+                            .buttonStyle(.secondary)
+                    }
+                    HStack(spacing: 12) {
+                        Button { move(-1) } label: { Label { Text("Earlier") } icon: { LucideIcon(.arrowLeft, size: 16) } }
+                            .buttonStyle(.secondary).disabled(index == 0)
+                        Button { move(1) } label: { Label { Text("Later") } icon: { LucideIcon(.arrowRight, size: 16) } }
+                            .buttonStyle(.secondary).disabled(index >= count - 1)
+                    }
+                    .sensoryFeedback(.impact(weight: .light), trigger: index)
+                    Button("Remove step") { dismiss(); remove() }.buttonStyle(.quiet)
+                }
+                .padding(Metric.gutter)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .page()
+            .navigationTitle("Step").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
+        }
+        .tint(Color.ink)
+        .presentationDetents([.medium, .large])
+    }
+}
+
+private extension Axis { var label: String { rawValue.uppercased() } }
+private extension RotationDirection {
+    var label: String { switch self { case .left: "← Left"; case .right: "Right →"; case .any: "Either way" } }
+}
+
 // MARK: Building blocks
 
-struct MappingGroup<Content: View>: View {
-    let title: String?
-    var caption: String?
-    @ViewBuilder var content: Content
-    init(_ title: String?, caption: String? = nil, @ViewBuilder content: () -> Content) {
-        self.title = title; self.caption = caption; self.content = content()
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let title { SectionLabel(title).padding(.leading, 2) }
-            VStack(spacing: 0) { content }.panel()
-            if let caption { Text(caption).font(.caption).foregroundStyle(Color.muted).padding(.leading, 2).fixedSize(horizontal: false, vertical: true) }
-        }
-    }
-}
-
-struct RowDivider: View {
-    var body: some View { Rectangle().fill(Color.rule).frame(height: Metric.hairline).padding(.leading, 14) }
-}
+/// The Mappings name for the guide's PanelGroup.
+typealias MappingGroup = PanelGroup
+/// The Mappings name for the guide's Rule.
+typealias RowDivider = Rule
 
 /// Wraps chips onto as many lines as they need.
 private struct FlowLayout: Layout {
@@ -858,26 +964,6 @@ private struct FlowLayout: Layout {
     Button(action: action) { Label { Text(title) } icon: { GestureIcon.image(gesture, size: 18) } }
 }
 
-extension Lucide {
-    /// The Mac's profile icon keys (MenuIcons.tsx `profileIcons`).
-    static func profile(_ key: String) -> Lucide {
-        switch key {
-        case "work": .briefcase
-        case "code": .codeXml
-        case "music": .music
-        case "game": .gamepad2
-        case "camera": .camera
-        case "design": .penTool
-        case "globe": .globe
-        case "star": .star
-        case "heart": .heart
-        case "monitor": .monitor
-        case "headphones": .headphones
-        default: .house
-        }
-    }
-}
-
 extension MappingAction.Kind {
     /// Mac OutputIcon where the Mac has the action; Lucide's nearest otherwise.
     var icon: Lucide {
@@ -897,9 +983,12 @@ extension MappingAction.Kind {
 }
 
 extension MappingAction {
-    func icon(profiles: [MappingProfile]) -> Lucide {
+    func iconPath(profiles: [MappingProfile]) -> Path {
+        if case .changeProfile(let id) = self { return ProfileIcon.path(profiles.first { $0.id == id }?.icon ?? ProfileIcon.fallback) }
+        return icon.path
+    }
+    private var icon: Lucide {
         switch self {
-        case .changeProfile(let id): Lucide.profile(profiles.first { $0.id == id }?.icon ?? "home")
         case .moveProfile(let direction): direction == .up ? .arrowUp : .arrowDown
         case .spotify(.next): .skipForward
         case .spotify(.play), .spotify(.playPause): .play

@@ -28,6 +28,7 @@
 	<string>Runes connects to your Meta Neural Band to receive gestures, including during an active background session.</string>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>bluetooth-central</string>
 	</array>
 	<key>NSSupportsLiveActivities</key>
@@ -48,6 +49,8 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

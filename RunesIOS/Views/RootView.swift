@@ -31,7 +31,7 @@ struct RootView: View {
             }
         }
         .animation(.entrance, value: controller.setupComplete)
-        .sheet(isPresented: $showSettings) {
+        .fullScreenCover(isPresented: $showSettings) {
             SettingsScreen(controller: controller)
         }
         .fullScreenCover(isPresented: $showMappings) {

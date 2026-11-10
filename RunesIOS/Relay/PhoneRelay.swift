@@ -306,10 +306,12 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         updateScan()
     }
 
-    /// Scans only for Macs that have no pending connect yet, plus a Mac being paired.
+    /// Scans for every Mac that is not connected yet, plus a Mac being paired. A pending connect alone
+    /// is not enough: after the Mac app restarts, iOS may never complete a connect to the saved identifier,
+    /// and only a scan finds the Mac under its current one.
     private func updateScan() {
         guard let central, central.state == .poweredOn else { return }
-        var services = Set(links.values.filter { !$0.deferred && ($0.peripheral == nil || $0.phase == .idle) }.map(\.service))
+        var services = Set(links.values.filter { !$0.deferred && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }.map(\.service))
         if let attempt, attempt.peripheral == nil { services.insert(attempt.service) }
         guard services != scanned else { return }
         scanned = services
@@ -359,7 +361,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         let waiting = links.values.filter { !$0.deferred && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }
         guard let match = waiting.first(where: { advertised.contains($0.service) }) ?? (advertised.isEmpty ? waiting.first : nil) else { return }
         if let stale = match.peripheral, stale !== peripheral {
-            onDiagnostic?("Mac relay identifier changed for \(match.record.name)")
+            onDiagnostic?("Mac relay identifier changed for \(match.record.name): \(stale.identifier.uuidString) -> \(peripheral.identifier.uuidString)")
             central.cancelPeripheralConnection(stale)
         }
         match.peripheral = peripheral
@@ -411,6 +413,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private func beginSetup(_ link: Link) {
         guard let peripheral = link.peripheral else { return }
         link.phase = .discovering
+        updateScan()
         link.session = nil
         link.nonce = nil
         link.outgoing.removeAll(); link.bindingsOut.removeAll()
@@ -577,6 +580,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 link.lastConnected = Date()
                 link.epoch += 1
                 onDiagnostic?("Mac relay live: \(link.record.name)")
+                updateScan()
                 enqueue(link, .message(.lease(seconds: RelayWire.leaseDuration, state: WakeProbe.shared.phoneState), nil))
                 queueBindings(link)
                 publish()
