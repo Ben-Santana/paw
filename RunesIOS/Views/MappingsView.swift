@@ -654,7 +654,6 @@ private struct ActionEditor: View {
     }
 }
 
-/// Sign-in for Spotify actions: the person's own Spotify app client ID, then OAuth.
 private struct SpotifyAccountSection: View {
     @ObservedObject var client: SpotifyClient
     @State private var working = false
@@ -667,9 +666,9 @@ private struct SpotifyAccountSection: View {
                 if client.isConnected {
                     HStack {
                         LucideIcon(.check, size: 18)
-                        Text("Connected\(client.accountName.map { " as \($0)" } ?? "")").font(.bodyText).lineLimit(1)
+                        Text("Signed in\(client.accountName.map { " as \($0)" } ?? "")").font(.bodyText).lineLimit(1)
                         Spacer()
-                        Button("Disconnect") { client.disconnect() }.font(.label)
+                        Button("Disconnect") { client.disconnect() }.font(.label).disabled(working)
                     }
                     .padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
                 } else {
@@ -687,7 +686,18 @@ private struct SpotifyAccountSection: View {
                 }
             }
             .panel()
-            if let error { Text(error).font(.caption).foregroundStyle(Color.ink) }
+            if client.isConnected {
+                Button(working ? "Checking…" : "Check connection") {
+                    working = true; error = nil
+                    Task { await client.checkConnection(); working = false }
+                }
+                .font(.label).disabled(working)
+            }
+            if let issue = error ?? client.accessIssue {
+                Text(issue).font(.caption).foregroundStyle(Color.ink)
+            } else if client.connectionCheckPassed {
+                Text("Spotify account access is working.").font(.caption).foregroundStyle(Color.muted)
+            }
             if !client.isConnected {
                 Text("Playback control needs Spotify Premium.").font(.caption).foregroundStyle(Color.muted)
             }

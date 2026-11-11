@@ -29,6 +29,8 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Runes</string>
+	<key>SpotifyClientID</key>
+	<string>$(SPOTIFY_CLIENT_ID)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>LSRequiresIPhoneOS</key>
