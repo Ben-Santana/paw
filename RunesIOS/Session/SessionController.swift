@@ -24,6 +24,7 @@ final class SessionController: ObservableObject {
     private var profileWatch: AnyCancellable?
     private var switchWatch: AnyCancellable?
     private var authTask: Task<Void, Never>?
+    private var setupAuthorization = BandSetupAuthorization()
     private var pairTasks: [UUID: Task<Void, Never>] = [:]
     private var loginContinuation: CheckedContinuation<URL, Error>?
     private var foreground = false
@@ -261,6 +262,11 @@ final class SessionController: ObservableObject {
     func refreshIdentities() { core.transport.perform { [core] in core.refreshIdentityChoices() } }
     /// True when the selected band can connect with a saved identity, without signing in.
     var canConnectWithoutSignIn: Bool { snapshot.selected != nil && snapshot.identityChoices.contains { $0.eligible } }
+    var canSetUpBandAgain: Bool { BandSetupAuthorization.canRestart(snapshot, foreground: foreground, signingIn: isSigningIn) }
+    func setUpBandAgain(for band: UUID) {
+        guard BandSetupAuthorization.canRestart(snapshot, for: band, foreground: foreground, signingIn: isSigningIn) else { return }
+        enroll()
+    }
     func connect(account: UUID? = nil, pending: Bool? = nil) {
         guard foreground else { return }
         uiError = nil; live.start()
@@ -295,11 +301,16 @@ final class SessionController: ObservableObject {
         }
     }
     func enroll() {
-        guard foreground, snapshot.selected != nil, !isSigningIn else { return }
+        guard foreground, let band = snapshot.selected, !isSigningIn else { return }
+        let authorization = setupAuthorization.begin(for: band)
         isSigningIn = true; uiError = nil
         authTask = Task { [weak self] in
             guard let self else { return }
-            let service = MetaService(); defer { service.close(); self.isSigningIn = false; self.authTask = nil }
+            let service = MetaService()
+            defer {
+                service.close()
+                if self.setupAuthorization.finish(authorization) { self.isSigningIn = false; self.authTask = nil }
+            }
             do {
                 let released: Bool = await withCheckedContinuation { continuation in
                     self.core.transport.perform { [core = self.core] in
@@ -307,14 +318,19 @@ final class SessionController: ObservableObject {
                     }
                 }
                 try Task.checkCancellation()
+                try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 guard released else { throw BandError.transport("Local Bluetooth release was not confirmed. Retry disconnect before starting ownership setup.") }
                 let request = try await service.prepareLogin(); try Task.checkCancellation()
+                try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 let callback = try await self.presentLogin(request)
+                try Task.checkCancellation()
+                try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 let session = try await service.finishLogin(callback, request: request); try Task.checkCancellation()
-                guard self.foreground else { throw BandError.authentication("Return to Runes and sign in again to begin enrollment.") }
+                try self.setupAuthorization.validate(authorization, selected: self.snapshot.selected, foreground: self.foreground)
                 self.live.start()
-                self.core.transport.perform { [core = self.core] in core.beginEnrollment(session) }
+                self.core.transport.perform { [core = self.core] in core.beginEnrollment(session, for: authorization.band) }
             } catch {
+                guard self.setupAuthorization.current == authorization else { return }
                 self.loginRequest = nil
                 if !Task.isCancelled, (error as? BandError)?.errorDescription != BandError.cancelled.errorDescription {
                     self.journal("sign_in", error.localizedDescription)
@@ -336,7 +352,9 @@ final class SessionController: ObservableObject {
         continuation.resume(throwing: BandError.authentication("Meta sign-in navigation failed. Try signing in again."))
     }
     func cancelSignIn() {
+        setupAuthorization.cancel()
         authTask?.cancel()
+        authTask = nil; isSigningIn = false
         if let continuation = loginContinuation { loginContinuation = nil; continuation.resume(throwing: BandError.cancelled) }
         loginRequest = nil
     }

@@ -108,6 +108,6 @@ extension BandCrypto {
         let attributes: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyClass as String: kSecAttrKeyClassPublic, kSecAttrKeySizeInBits as String: 256]
         guard let secKey = SecKeyCreateWithData(key.x963Representation as CFData, attributes as CFDictionary, nil) else { throw BandError.authentication("Invalid saved band key.") }
         let der = try P256.Signing.ECDSASignature(rawRepresentation: signature).derRepresentation
-        guard SecKeyVerifySignature(secKey, .ecdsaSignatureDigestX962SHA256, digest as CFData, der as CFData, nil) else { throw BandError.authentication("Band proof does not match the saved key. Disconnect and check the selected identity; do not re-enroll as a connection repair.") }
+        guard SecKeyVerifySignature(secKey, .ecdsaSignatureDigestX962SHA256, digest as CFData, der as CFData, nil) else { throw BandError.trust(.invalidBandProof) }
     }
 }

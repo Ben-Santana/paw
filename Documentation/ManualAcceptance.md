@@ -39,12 +39,17 @@ Repeat the intervals with the Live Activity active, then with it dismissed. Stat
 - Use Disconnect during connect/reconnect; verify it cancels future connection attempts.
 - Interrupt enrollment before completion, then explicitly retry sign-in. Pending host identity should be retained; a finish with a persisted band key can first be retried with Connect.
 - Re-enroll from another client to invalidate this phone's identity; verify Runes asks for user recovery instead of silently enrolling again.
+- Open **Set up band again** in Advanced and on the failed onboarding test step, then cancel. Confirm the saved setup remains selected and no ownership ceremony starts.
+- Confirming recovery for one band must not enroll another band if the selection changes before the Settings sheet dismisses or Meta sign-in finishes.
+- Cancel during Meta login preparation and in the login sheet, then retry. Old callbacks must not complete the new request. Retain saved and pending identities until a fresh authenticated connection confirms the new setup.
+- After an explicitly confirmed ownership recovery, require a fresh connection and gesture streaming before calling recovery successful. Encryption alone is insufficient.
 - Where iOS provides state restoration after system termination, inspect restoration and new authentication events. User force-quit is a separate unsupported guarantee and must not be used as the sole restoration test.
 
 ## 5. Diagnostics and privacy
 
 - Export, share, and clear the journal; ensure live event reception continues.
 - Check host times and device times remain distinct. Reconnect boundaries must be visible.
+- In Advanced, distinguish encryption established, identity accepted, and ready for gestures. A new attempt must clear the previous failure; unknown result codes must remain visible without being labelled as identity mismatch.
 - Confirm exports exclude passwords, login tokens, ownership receipts, private keys, and raw HTTP response bodies.
 - If journal writes fail, the UI must display the warning while reception remains active. Do not claim evidence for intervals whose journal is incomplete.
 

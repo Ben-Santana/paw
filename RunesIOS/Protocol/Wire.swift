@@ -3,14 +3,43 @@ import Foundation
 
 enum BandError: LocalizedError {
     case transport(String), pairing(String), wire(String), authentication(String), storage(String), cancelled
+    case trust(BandTrustFailure), timeout(stage: String)
+    case setupRejected(result: UInt32, channel: UInt16)
     var errorDescription: String? {
         switch self {
         case .transport(let s), .pairing(let s), .wire(let s), .authentication(let s), .storage(let s): return s
         case .cancelled: return "Operation cancelled."
+        case .trust(let failure): return failure.message
+        case .timeout(let stage): return "Band response timed out at \(stage)."
+        case .setupRejected(let result, let channel): return "Band setup was rejected (result \(String(format: "0x%08X", result)), channel \(channel))."
         }
     }
     var requiresUser: Bool {
-        switch self { case .authentication, .storage, .pairing, .wire: return true; default: return false }
+        switch self {
+        case .authentication, .trust, .setupRejected, .storage, .pairing, .wire: return true
+        case .timeout(let stage): return stage == "trust" || stage == "ceremony"
+        default: return false
+        }
+    }
+}
+
+enum BandTrustFailure: Equatable, Sendable {
+    case rejected(result: UInt32, channel: UInt16)
+    case invalidBandProof
+
+    var message: String {
+        switch self {
+        case .rejected(let result, let channel):
+            let reason: String
+            switch result {
+            case 0x03001043: reason = "The band rejected this phone's owner identity"
+            case 0x03001044: reason = "The band rejected this phone's authentication signature"
+            default: reason = "The band returned an unrecognized authentication rejection"
+            }
+            return "\(reason) (result \(String(format: "0x%08X", result)), channel \(channel)). Saved setup was retained."
+        case .invalidBandProof:
+            return "The band's authentication proof did not match its saved key. Saved setup was retained."
+        }
     }
 }
 

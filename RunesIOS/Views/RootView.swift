@@ -12,6 +12,7 @@ struct RootView: View {
     /// An app a widget asked for while another full-screen page was up; shown once that page has gone.
     @State private var queuedApp: RunesApp?
     @State private var showSetup = false
+    @State private var restartBandSetup: UUID?
     @ObservedObject private var links = AppLinkRouter.shared
 
     private var status: BandStatus {
@@ -36,8 +37,15 @@ struct RootView: View {
             }
         }
         .animation(.entrance, value: controller.setupComplete)
-        .fullScreenCover(isPresented: $showSettings, onDismiss: showQueuedApp) {
-            SettingsScreen(controller: controller)
+        .fullScreenCover(isPresented: $showSettings, onDismiss: {
+            if let band = restartBandSetup {
+                restartBandSetup = nil; queuedApp = nil
+                controller.setUpBandAgain(for: band)
+            } else { showQueuedApp() }
+        }) {
+            SettingsScreen(controller: controller, setUpBandAgain: { band in
+                restartBandSetup = band; showSettings = false
+            })
         }
         .fullScreenCover(isPresented: $showMappings, onDismiss: showQueuedApp) {
             MappingsScreen(store: .shared, done: { showMappings = false })
@@ -71,7 +79,7 @@ struct RootView: View {
 
     /// Shows an app a widget asked for, whatever full-screen page was open.
     private func open(_ app: RunesApp) {
-        guard controller.setupComplete, !showSetup else { return }
+        guard controller.setupComplete, !showSetup, !controller.isSigningIn, restartBandSetup == nil else { return }
         if showApp {
             // Already showing an app: change it in place. Leave the same app where it was.
             if openedApp != app { openedApp = app }
