@@ -12,10 +12,12 @@ final class BandProtocol {
         /// The band would not provide EMG. The connection stays up; EMG is simply left off.
         case emgUnavailable(String)
         case handUnavailable(String)
+        case wristFeedback(WristFeedbackResult)
     }
     private struct Pending {
         let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data?
         var isHandRequest: Bool { operation == "read_hand" || operation == "set_hand" }
+        var isWristFeedback: Bool { operation == "wrist_feedback" }
     }
     private var identity: BandIdentity?
     private let ceremony: OwnershipCeremony?
@@ -30,6 +32,8 @@ final class BandProtocol {
     private var hostTrusted = false, bandTrusted = false, endSent = false, gesturesEnabled = false, gyroEnabled = false, orientationEnabled = false, emgEnabled = false
     private(set) var stage = "idle"
     private var deadline = TimeInterval.infinity
+    var canSendWristFeedback: Bool { stage == "ready" && pending.isEmpty }
+    var wristFeedbackPending: Bool { pending[6]?.isWristFeedback == true }
     init(identity: BandIdentity?, ceremony: OwnershipCeremony? = nil) throws {
         guard (identity == nil) != (ceremony == nil) else { throw BandError.authentication("Provide identity or explicit enrollment.") }
         self.identity = identity; self.ceremony = ceremony
@@ -48,6 +52,9 @@ final class BandProtocol {
         }
         var signals: [Signal] = []
         for (channel, request) in pending where now >= request.deadline {
+            if request.isWristFeedback {
+                pending[channel] = nil; signals.append(.wristFeedback(.unconfirmed)); continue
+            }
             guard request.isHandRequest else { throw BandError.timeout(stage: request.operation) }
             pending[channel] = nil
             signals.append(.handUnavailable("The wrist setting timed out. Try again."))
@@ -70,7 +77,7 @@ final class BandProtocol {
         let words: [UInt32] = opened.contains(channel) ? [] : [0x8100ce56, 0x02000314]
         if !words.isEmpty { types[channel] = nil; types[channel | 0x8000] = nil }
         opened.insert(channel)
-        pending[channel] = Pending(operation: operation, id: nextID, deadline: now + 8, flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
+        pending[channel] = Pending(operation: operation, id: nextID, deadline: now + (operation == "wrist_feedback" ? 5 : 8), flags: ["start_streams", "stop_streams"].contains(operation) ? payload : nil)
         return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, payload)))
     }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
@@ -173,6 +180,7 @@ final class BandProtocol {
             pending[packet.channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
             if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
+            if p.isWristFeedback { return (Data(), [.wristFeedback(WristFeedbackResult(packet.payload))]) }
             if p.isHandRequest {
                 guard let status = try? f.integer(2), status == 1 else {
                     return (Data(), [.handUnavailable("The band did not confirm the wrist setting request. Try again.")])
@@ -235,6 +243,10 @@ final class BandProtocol {
         if let p = pending[channel], p.isHandRequest {
             pending[channel] = nil; opened.remove(channel)
             return (Data(), [.handUnavailable("The band closed the wrist setting request. Try again.")])
+        }
+        if let p = pending[channel], p.isWristFeedback {
+            pending[channel] = nil; opened.remove(channel)
+            return (Data(), [.wristFeedback(.unconfirmed)])
         }
         if channel == 6, pending[channel] == nil {
             opened.remove(channel)

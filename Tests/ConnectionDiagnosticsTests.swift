@@ -59,6 +59,19 @@ private struct TrustFixture {
         let output = try host.request(operation, channel: 6, field: 5, payload: payload, now: now)
         return try DataXReceiver().feed(bandRx.feed(output)[0])[0]
     }
+
+    func requestFeedback(_ phase: WristFeedbackPhase, now: TimeInterval = 4) throws -> Frame {
+        let output = try host.request("wrist_feedback", channel: 6, field: 17, payload: phase.payload, now: now)
+        return try DataXReceiver().feed(bandRx.feed(output)[0])[0]
+    }
+
+    func enableGestures() throws {
+        let flags = BandProtocol.streamFlags(gyro: false, orientation: false)
+        let start = try host.request("start_streams", channel: 5, field: 4, payload: flags, now: 4)
+        let request = try DataXReceiver().feed(bandRx.feed(start)[0])[0]
+        let id = try Fields(request.payload).integer(1)
+        _ = try send(Frame(channel: 5, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 1) + PB.field(5, flags)), now: 5)
+    }
 }
 
 @main
@@ -70,6 +83,7 @@ struct ConnectionDiagnosticsTests {
     }
 
     static func main() throws {
+        try wristFeedback()
         try handSettings()
         for (code, expected): (UInt32, ConnectionFailure.Kind) in [
             (0x03001043, .identityMismatch), (0x03001044, .signatureRejected), (0x0300ABCD, .unknownRejection)
@@ -133,6 +147,91 @@ struct ConnectionDiagnosticsTests {
         let setup = ConnectionFailure(.setupRejected(result: 0x03001043, channel: 3))
         precondition(setup.kind == .setupRejected && setup.result == 0x03001043)
         print("Connection diagnostics passed: encrypted trust refusal, signature rejection, unknown results, timeouts, proof verification, and attempt lifecycle.")
+    }
+
+    static func wristFeedback() throws {
+        precondition(WristFeedbackPhase.wrap.payload == Data([0x0a, 0x05, 0x08, 0x46, 0x18, 0xc8, 0x01]))
+        precondition(WristFeedbackPhase.settle.payload == Data([0x0a, 0x05, 0x08, 0x64, 0x18, 0xe6, 0x01]))
+        let nestedSuccess = PB.field(18, PB.field(1, 0) + PB.field(2, Data()))
+        let responses: [(Data, WristFeedbackResult)] = [
+            (PB.field(2, 1) + nestedSuccess, .accepted),
+            (PB.field(2, 0) + nestedSuccess, .rejected),
+            (nestedSuccess, .unconfirmed),
+            (PB.field(2, 1), .unconfirmed),
+            (PB.field(2, 1) + PB.field(2, 1) + nestedSuccess, .unconfirmed),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, 1) + PB.field(2, Data())), .rejected),
+            (PB.field(2, 1) + PB.field(18, PB.field(2, Data())), .unconfirmed),
+            (PB.field(2, 1) + PB.field(18, PB.field(1, 0) + PB.field(3, Data())), .unconfirmed)
+        ]
+        for (response, expected) in responses {
+            let fixture = try TrustFixture(); try fixture.authenticate()
+            let request = try fixture.requestFeedback(.wrap)
+            let fields = try Fields(request.payload), id = try fields.integer(1)
+            let payload = try fields.bytes(17)
+            precondition(payload == WristFeedbackPhase.wrap.payload)
+            precondition(fixture.host.wristFeedbackPending && !fixture.host.canSendWristFeedback)
+            _ = caught { _ = try fixture.requestHand("set_hand", payload: Handedness.left.configuration, now: 5) }
+            for (channel, wrongID): (UInt16, UInt64) in [(5, id), (6, id + 1)] {
+                let wrong = try fixture.send(Frame(channel: channel, words: [0x02000315], payload: PB.field(1, wrongID) + response), now: 5)
+                precondition(wrong.1.isEmpty && fixture.host.wristFeedbackPending)
+            }
+            let reply = try fixture.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + response), now: 6)
+            precondition(reply.1.contains { if case .wristFeedback(let result) = $0 { return result == expected }; return false })
+            precondition(!fixture.host.wristFeedbackPending && fixture.host.canSendWristFeedback)
+            _ = try fixture.requestHand("set_hand", payload: Handedness.left.configuration, now: 7)
+            precondition(!fixture.host.canSendWristFeedback)
+        }
+        for timeout in [false, true] {
+            let fixture = try TrustFixture(); try fixture.authenticate(); try fixture.enableGestures()
+            let request = try fixture.requestFeedback(.settle, now: 6)
+            let id = try Fields(request.payload).integer(1)
+            if timeout {
+                let waiting = try fixture.host.tick(now: 10.9)
+                precondition(waiting.isEmpty)
+                let expired = try fixture.host.tick(now: 11)
+                precondition(expired.contains { if case .wristFeedback(.unconfirmed) = $0 { return true }; return false })
+            } else {
+                _ = try fixture.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 0)), now: 7)
+            }
+            let gesture = try fixture.send(Frame(channel: 0x8005, words: [0x0200020d], payload:
+                PB.field(1, 1) + PB.field(2, 100) + PB.field(3, 2) + PB.field(4, 1)), now: 12)
+            precondition(gesture.1.contains { if case .gesture(2, 1, _, _, _, _) = $0 { return true }; return false })
+            _ = try fixture.requestHand("set_hand", payload: Handedness.right.configuration, now: 13)
+            let stale = try fixture.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 1) + nestedSuccess), now: 14)
+            precondition(stale.1.isEmpty && !fixture.host.canSendWristFeedback)
+        }
+        let closed = try TrustFixture(); try closed.authenticate()
+        _ = try closed.requestFeedback(.wrap)
+        let rejection = try closed.send(Frame(channel: 6, words: [0x03000001], payload: Data()), now: 5)
+        precondition(rejection.1.contains { if case .wristFeedback(.unconfirmed) = $0 { return true }; return false })
+        precondition(closed.host.canSendWristFeedback)
+
+        var gate = WristFeedbackGate()
+        let first = UUID(), next = UUID()
+        precondition(!gate.take(.wrap, change: first, now: 1))
+        gate.begin(first)
+        precondition(gate.take(.wrap, change: first, now: 1))
+        precondition(!gate.take(.wrap, change: first, now: 2))
+        precondition(!gate.take(.settle, change: first, now: 1.1))
+        precondition(gate.take(.settle, change: first, now: 1.7))
+        precondition(!gate.take(.settle, change: first, now: 3))
+        gate.begin(next); gate.cancel(first)
+        precondition(!gate.take(.wrap, change: first, now: 4))
+        precondition(gate.take(.wrap, change: next, now: 4))
+        gate.cancel(next)
+        precondition(!gate.take(.settle, change: next, now: 5))
+        gate.begin(first); gate.cancel()
+        precondition(!gate.take(.settle, change: first, now: 6))
+
+        var hand = HandSetting()
+        precondition(hand.read() && hand.received(.right) && hand.confirmedChangeID == nil)
+        precondition(hand.change(to: .left) && hand.confirmedChangeID == nil)
+        let change = hand.changeID
+        precondition(hand.wrote() && hand.received(.left) && hand.confirmedChangeID == change)
+        hand.cancel(); precondition(hand.confirmedChangeID == nil)
+        precondition(hand.change(to: .right) && hand.changeID != change && hand.wrote())
+        precondition(hand.received(.left) && hand.confirmedChangeID == nil)
+        print("Wrist feedback checks passed: fixed bounded payloads, nested acknowledgement, serialized control, gesture continuation, cancellation and fresh-change gating.")
     }
 
     static func handSettings() throws {

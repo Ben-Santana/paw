@@ -264,6 +264,13 @@ final class SessionController: ObservableObject {
         guard foreground, let band = snapshot.selected else { return }
         core.transport.perform { [core] in core.setHand(hand, for: band) }
     }
+    func wristFeedback(_ phase: WristFeedbackPhase, for hand: Handedness, change: UUID) {
+        guard foreground, let band = snapshot.selected, let attempt = snapshot.connectionAttempt.startedAt else { return }
+        core.transport.perform { [core] in core.wristFeedback(phase, for: hand, change: change, band: band, attempt: attempt) }
+    }
+    func cancelWristFeedback(change: UUID) {
+        core.transport.perform { [core] in core.cancelWristFeedback(change: change) }
+    }
     /// True when the selected band can connect with a saved identity, without signing in.
     var canConnectWithoutSignIn: Bool { snapshot.selected != nil && snapshot.identityChoices.contains { $0.eligible } }
     var canSetUpBandAgain: Bool { BandSetupAuthorization.canRestart(snapshot, foreground: foreground, signingIn: isSigningIn) }

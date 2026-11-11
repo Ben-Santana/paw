@@ -61,6 +61,9 @@ final class SessionCore: @unchecked Sendable {
     private var available = false
     private var started = false
     private var handRequested = false
+    private var wristFeedbackGate = WristFeedbackGate()
+    private var feedbackInFlight: (change: UUID, phase: WristFeedbackPhase)?
+    private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
 
     init() {
@@ -149,7 +152,11 @@ final class SessionCore: @unchecked Sendable {
         if state == .streaming { snapshot.connectionAttempt.reach(.ready) }
         snapshot.state = state; snapshot.message = message
         WakeProbe.shared.setBandState(state.rawValue)
-        if state != .streaming { snapshot.handSetting.cancel(); onRelayReady?(nil) }
+        if state != .streaming {
+            snapshot.handSetting.cancel(); snapshot.wristFeedbackResult = nil; feedbackInFlight = nil
+            wristFeedbackGate.cancel(); pendingHandTarget = nil
+            onRelayReady?(nil)
+        }
         record("connection", "\(state.rawValue): \(message)"); publish()
     }
     private func record(_ kind: String, _ message: String? = nil, event: GestureEvent? = nil, receipt: ReceiptContext? = nil) {
@@ -161,6 +168,7 @@ final class SessionCore: @unchecked Sendable {
     }
     func lifecycle(_ state: String) {
         appState = state; transport.setApplicationState(state)
+        if state != "foreground" { wristFeedbackGate.cancel() }
         WakeProbe.shared.setApplicationState(state)
         record("lifecycle", state); publish()
     }
@@ -376,12 +384,43 @@ final class SessionCore: @unchecked Sendable {
 
     func setHand(_ hand: Handedness, for band: UUID) {
         guard snapshot.selected == band, appState == "foreground", snapshot.state == .streaming,
+              let attempt = snapshot.connectionAttempt.startedAt,
               snapshot.handSetting.change(to: hand) else { return }
+        pendingHandTarget = (band, attempt)
         UserDefaults.standard.removeObject(forKey: "bandHand")
+        snapshot.wristFeedbackResult = nil
+        if let change = snapshot.handSetting.changeID { wristFeedbackGate.begin(change) }
         record("hand", "Requested \(hand.rawValue) wrist."); publish()
+        sendPendingHand()
+    }
+
+    private func sendPendingHand() {
+        guard case .write(let hand) = snapshot.handSetting.pending, proto?.wristFeedbackPending == false else { return }
+        guard let target = pendingHandTarget, snapshot.selected == target.band,
+              snapshot.connectionAttempt.startedAt == target.attempt,
+              appState == "foreground", snapshot.state == .streaming else {
+            pendingHandTarget = nil
+            snapshot.handSetting.fail("Return to Runes and choose a wrist again."); publish(); return
+        }
+        pendingHandTarget = nil
         do { try rpc("set_hand", 6, 5, hand.configuration) }
         catch { snapshot.handSetting.fail("Could not change the wrist setting. Reconnect and try again."); fail(error) }
     }
+
+    func wristFeedback(_ phase: WristFeedbackPhase, for hand: Handedness, change: UUID, band: UUID, attempt: Date) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard appState == "foreground", snapshot.state == .streaming, snapshot.selected == band,
+              snapshot.connectionAttempt.startedAt == attempt, snapshot.handSetting.confirmedChangeID == change,
+              snapshot.hand == hand, let proto, proto.canSendWristFeedback,
+              wristFeedbackGate.take(phase, change: change, now: now) else { return }
+        feedbackInFlight = (change, phase); snapshot.wristFeedbackResult = nil
+        record("wrist_feedback", "\(phase.rawValue) requested.")
+        do { try rpc("wrist_feedback", 6, 17, phase.payload) }
+        catch { snapshot.wristFeedbackResult = .unconfirmed; record("wrist_feedback", "Send unconfirmed.") }
+        publish()
+    }
+
+    func cancelWristFeedback(change: UUID) { wristFeedbackGate.cancel(change) }
 
     private func clearHand() {
         snapshot.handSetting = HandSetting()
@@ -461,6 +500,13 @@ final class SessionCore: @unchecked Sendable {
             try reconcileStreams()
         case .handUnavailable(let reason):
             snapshot.handSetting.fail(reason); record("hand", reason); publish()
+        case .wristFeedback(let result):
+            if let feedback = feedbackInFlight {
+                if snapshot.handSetting.confirmedChangeID == feedback.change { snapshot.wristFeedbackResult = result }
+                record("wrist_feedback", "\(feedback.phase.rawValue) \(result.rawValue).")
+            }
+            feedbackInFlight = nil
+            sendPendingHand(); publish()
         case .emg(let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))
