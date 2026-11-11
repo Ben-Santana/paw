@@ -14,6 +14,8 @@ final class LiveActivityController {
     private var workout: WorkoutActivityState?
     private var score: ScoreActivityState?
     private var cook: CookActivityState?
+    /// True while the regular mappings have the band though an app runs (`ControlSwitch`).
+    private var regular = false
     private var bandWanted = false
     private var scoreTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
@@ -110,6 +112,16 @@ final class LiveActivityController {
     /// Shows the recipe being cooked, or the band status again with nil.
     func show(cook state: CookActivityState?, alert: LiveAlert? = nil) { cook = state; push(alert) }
 
+    /// While the regular mappings have the band, the running app steps aside here too: the
+    /// activity shows the band status, as it does with no app running. The app's state is
+    /// kept and comes back with its controls. `alert` is for a switch made with the phone locked.
+    func show(regular on: Bool, alert: LiveAlert? = nil) {
+        guard on != regular || alert != nil else { return }
+        regular = on
+        guard activity != nil else { return }
+        push(alert)
+    }
+
     /// Sends the current state; `alert` lights the Lock Screen with a sound.
     private func push(_ alert: LiveAlert?) {
         if activity == nil, cook != nil { start() }
@@ -131,7 +143,7 @@ final class LiveActivityController {
         // A simmering pot sits for longer still.
         let quiet: TimeInterval = cook != nil ? 4 * 3600 : workout != nil || score != nil ? 15 * 60 : 60
         return ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected,
-                                            profileIcon: profileIcon, workout: workout, score: score, cook: cook),
+                                            profileIcon: profileIcon, workout: regular ? nil : workout, score: regular ? nil : score, cook: regular ? nil : cook),
                                staleDate: Date().addingTimeInterval(quiet))
     }
 

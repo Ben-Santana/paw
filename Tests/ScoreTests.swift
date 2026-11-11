@@ -164,6 +164,118 @@ struct ScoreTests {
         cueGame = next; next.rename(0, to: "Ann")
         precondition(ScoreCue(from: cueGame, to: next) == nil)
 
+        // Game types. Free play never ends; an older save comes back as free play.
+        precondition(ScoreGame().rules == .open && ScoreGame().standing(0) == nil)
+        precondition(Set(ScoreRules.presets.map(\.id)).count == ScoreRules.presets.count && ScoreRules.presets.allSatisfy(\.isPreset))
+        let old = try! JSONDecoder().decode(ScoreGame.self, from: Data(#"{"players":[{"id":"a","name":"A","score":3,"tint":0},{"id":"b","name":"B","score":1,"tint":1}],"selected":1,"live":false}"#.utf8))
+        precondition(old.rules == .open && old.scores == [3, 1] && old.selected == 1 && old.winner == nil)
+        func rules(_ id: String) -> ScoreRules { ScoreRules.presets.first { $0.id == id }! }
+        func points(_ game: inout ScoreGame, _ player: Int, _ count: Int) { for _ in 0..<count { game.change(player, by: 1) } }
+
+        // Choosing a type starts everyone from zero; choosing the same one again doesn't.
+        var match = ScoreGame(); match.change(0, by: 5)
+        match.play(rules("table-tennis")); precondition(match.isEmpty)
+        match.change(0, by: 1); match.play(rules("table-tennis")); precondition(match.scores == [1, 0])
+        match.reset()
+
+        // Table tennis: 11 wins a game, by two; three games win the match.
+        points(&match, 0, 10); points(&match, 1, 10); points(&match, 0, 1)
+        precondition(match.scores == [11, 10] && match.players[0].games == 0, "11–10 isn't two clear")
+        points(&match, 0, 1)
+        precondition(match.scores == [0, 0] && match.players.map(\.games) == [1, 0] && match.standing(0) == "Games 1")
+        precondition(match.summary == "Player 1 0 · Player 2 0 · Games 1–0")
+        // The winner taking the point back puts the game back; nobody else can.
+        precondition(match.canTake(0) && !match.canTake(1))
+        match.change(0, by: -1)
+        precondition(match.scores == [11, 10] && match.players[0].games == 0 && !match.isEmpty)
+        points(&match, 0, 1); points(&match, 1, 1); match.change(0, by: -1)
+        precondition(match.players.map(\.games) == [1, 0] && match.scores == [0, 1], "After another point the game stands")
+        match.change(1, by: -1)
+        points(&match, 0, 11); points(&match, 0, 10)
+        precondition(match.players[0].games == 2 && match.winner == nil)
+        let last = match
+        points(&match, 0, 1)
+        precondition(match.winner == 0 && match.players[0].games == 3 && match.scores == [11, 0], "The last game's points stay")
+        precondition(match.standing(0) == "Won · Games 3" && ScoreCue(from: last, to: match) == .add)
+        points(&match, 1, 3); points(&match, 0, 1)
+        precondition(match.scores == [11, 0], "Nobody scores once the match is won")
+        match.change(0, by: -1)
+        precondition(match == last, "Taking the winning point back reopens the match")
+        var band = last
+        precondition(band.apply(.add(0)) == "Player 1 wins · Player 1 11 · Player 2 0 · Games 3–0")
+        match.reset()
+        precondition(match.isEmpty && match.winner == nil && match.rules.id == "table-tennis")
+
+        // Near the end each player counts down the points they still need, lead included.
+        var close = ScoreGame(); close.play(rules("table-tennis"))
+        precondition(close.toGo(0) == nil && close.pointName(0) == nil, "Nothing to count at the start")
+        points(&close, 0, 8); precondition(close.toGo(0) == 3 && close.toGo(1) == nil)
+        points(&close, 1, 9); precondition(close.toGo(0) == 3 && close.toGo(1) == 2)
+        points(&close, 0, 2); precondition(close.toGo(0) == 1 && close.toGo(1) == 3 && close.pointName(0) == "Game point" && close.pointName(1) == nil)
+        points(&close, 1, 1); precondition(close.toGo(0) == 2 && close.toGo(1) == 2, "Ten all: two clear each")
+        precondition(close.apply(.add(1)) == "Game point, Player 2 · Player 1 10 · Player 2 11 · Games 0–0")
+        close.select(0); precondition(close.apply(.addSelected) == "Player 1 11")
+        points(&close, 1, 2); points(&close, 1, 11)
+        points(&close, 1, 10); precondition(close.pointName(1) == "Match point" && close.apply(.takeSelected) == "Player 2 9")
+        points(&close, 1, 2); precondition(close.winner == 1 && close.toGo(1) == nil && close.toGo(0) == nil)
+        var far = ScoreGame(); far.play(.custom(name: "Far", points: 11, winBy: 5, games: 1))
+        points(&far, 0, 6); precondition(far.toGo(0) == 5 && far.toGo(1) == nil)
+        points(&far, 1, 9); precondition(far.toGo(0) == nil && far.toGo(1) == 2, "Eight to go is too far to count")
+        var sets = ScoreGame(); sets.play(rules("volleyball")); points(&sets, 0, 24)
+        precondition(sets.pointName(0) == "Set point")
+
+        // Tennis: 15, 30, 40, deuce and advantage; six games by two; a tiebreak at six all.
+        var tennis = ScoreGame(); tennis.play(rules("tennis"))
+        points(&tennis, 0, 1); precondition(tennis.points(0) == "15" && tennis.points(1) == "0")
+        points(&tennis, 0, 2); points(&tennis, 1, 3)
+        precondition(tennis.points(0) == "40" && tennis.points(1) == "40")
+        points(&tennis, 1, 1); precondition(tennis.points(1) == "Ad" && tennis.points(0) == "40")
+        points(&tennis, 0, 1); precondition(tennis.points(0) == "40" && tennis.points(1) == "40", "Back to deuce")
+        let deuce = tennis
+        points(&tennis, 0, 2)
+        precondition(tennis.players.map(\.games) == [1, 0] && tennis.scores == [0, 0])
+        var cueFrom = deuce; points(&cueFrom, 0, 1); let cueTo = { var g = cueFrom; g.change(0, by: 1); return g }()
+        precondition(ScoreCue(from: cueFrom, to: cueTo) == .add, "A won game sounds as a point added, though the points go back to zero")
+        func win(_ g: inout ScoreGame, _ player: Int, _ count: Int = 1) { for _ in 0..<count { points(&g, player, 4) } }
+        win(&tennis, 0, 4); win(&tennis, 1, 5)
+        precondition(tennis.players.map(\.games) == [5, 5])
+        win(&tennis, 0); precondition(tennis.players.map(\.games) == [6, 5] && tennis.players[0].sets == 0, "6–5 isn't a set")
+        win(&tennis, 1); precondition(tennis.players.map(\.games) == [6, 6] && tennis.tiebreak)
+        points(&tennis, 0, 6); points(&tennis, 1, 6)
+        precondition(tennis.points(0) == "6" && tennis.points(1) == "6", "A tiebreak counts in ones")
+        points(&tennis, 1, 2)
+        precondition(tennis.players.map(\.sets) == [0, 1] && tennis.players.map(\.games) == [0, 0] && !tennis.tiebreak)
+        precondition(tennis.standing(1) == "Sets 1 · Games 0")
+        win(&tennis, 1, 5)
+        win(&tennis, 1)
+        precondition(tennis.winner == 1 && tennis.players.map(\.sets) == [0, 2] && tennis.standing(1) == "Won · Sets 2 · Games 6")
+
+        // Volleyball counts sets; a removed winner leaves no winner, and the others keep theirs.
+        var volley = ScoreGame(); volley.addPlayer(); volley.play(rules("volleyball"))
+        points(&volley, 2, 25)
+        precondition(volley.players.map(\.sets) == [0, 0, 1] && volley.standing(2) == "Sets 1" && volley.scores == [0, 0, 0])
+        precondition(!volley.canTake(0) && volley.canTake(2))
+        volley.rename(0, to: "Ann"); volley.removePlayer(0)
+        precondition(!volley.canTake(1), "Players coming and going settle the last game")
+
+        // Custom types are trimmed and kept in range; every type survives a save.
+        let own = ScoreRules.custom(name: "  Cornhole  ", points: 21, winBy: 5, games: 0)
+        precondition(own.name == "Cornhole" && own.points == 21 && own.winBy == 5 && own.games == 1 && !own.isPreset)
+        precondition(own.detail == "First to 21, 5 clear." && rules("badminton").detail == "First to 21, 2 clear. Best of 3 games.")
+        precondition(ScoreRules.custom(name: "Far", points: 7, winBy: 40, games: 1).winBy == 7, "A lead can't be more than the points")
+        // Win by any lead: 5–3 and 6–4 aren't three clear; 7–4 is.
+        var apart = ScoreGame(); apart.play(.custom(name: "Three clear", points: 5, winBy: 3, games: 1))
+        points(&apart, 0, 3); points(&apart, 1, 3); points(&apart, 0, 2)
+        precondition(apart.winner == nil && apart.scores == [5, 3])
+        points(&apart, 1, 1); points(&apart, 0, 1); precondition(apart.winner == nil && apart.scores == [6, 4])
+        points(&apart, 0, 1); precondition(apart.winner == 0 && apart.scores == [7, 4])
+        precondition(ScoreRules.custom(name: " ", points: 0, winBy: 1, games: 2).name == "My game")
+        var short = ScoreGame(); short.play(.custom(name: "Quick", points: 3, winBy: 1, games: 1))
+        points(&short, 1, 3); precondition(short.winner == 1 && short.scores == [0, 3] && short.standing(1) == "Won")
+        let kept = try! JSONDecoder().decode(ScoreGame.self, from: JSONEncoder().encode(short))
+        precondition(kept == short && kept.winner == 1 && kept.canTake(1))
+        precondition(try! JSONDecoder().decode([ScoreRules].self, from: JSONEncoder().encode(ScoreRules.presets + [own])) == ScoreRules.presets + [own])
+
         print("Score tests passed")
     }
 }

@@ -139,6 +139,13 @@ struct SnapshotGallery: View {
             let game = name == "score" ? PreviewFixtures.score(7, 4) : name == "score-idle" ? PreviewFixtures.score(0, 0, live: false)
                 : PreviewFixtures.score(7, 4, 11, 2, 0, 9)
             NavigationStack { ScoreScreen(store: ScoreStore(preview: game), showAll: name == "score-all" ? true : nil) }
+        } else if name == "score-tennis" || name == "score-tennis-one" {
+            NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.tennis()), showAll: name == "score-tennis") }
+        } else if ["score-deuce", "score-point", "score-point-one"].contains(name) {
+            NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.deuce(ahead: name != "score-deuce")), showAll: name != "score-point-one") }
+        } else if name == "score-types" || name == "score-type-new" {
+            let own = ScoreRules.custom(id: "custom-cornhole", name: "Cornhole", points: 21, winBy: 1, games: 2)
+            GameTypeScreen(store: ScoreStore(preview: PreviewFixtures.tennis(), types: [own]), creating: name == "score-type-new")
         } else if name == "score-settings" {
             // A combo on one player shows how a combo reads in the list.
             let controls: ScoreControls = {

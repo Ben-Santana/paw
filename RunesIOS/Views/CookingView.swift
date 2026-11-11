@@ -208,6 +208,7 @@ struct CookingView: View {
         .foregroundStyle(Color.muted)
         .frame(minHeight: 18)
         .animation(.standard, value: items.map { $0.id + $0.word })
+
     }
 }
 

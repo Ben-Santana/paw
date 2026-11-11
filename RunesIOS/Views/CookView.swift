@@ -454,6 +454,7 @@ struct CookSettingsScreen: View {
                     } footer: {
                         Note("A gesture or a combo each. While you cook, they turn the recipe’s pages and run its timers, and mappings that use their gestures are off.")
                     }
+                    SwitchControlsBlock()
                     Block {
                         HairlineSegments(selection: Binding(get: { store.sounds ? Sound.on : .off }, set: { store.setSounds($0 == .on) }),
                                          options: Sound.allCases, title: \.rawValue)

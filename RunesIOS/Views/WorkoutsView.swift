@@ -75,6 +75,18 @@ struct ApplicationsScreen: View {
             }
         }
         .tint(Color.ink)
+        // Over the whole stack, bar included, so the screen blurs as one piece.
+        .regularControlsCover(active: showsRunningApp)
+    }
+
+    /// Whether the screen in front belongs to an app that is running right now.
+    private var showsRunningApp: Bool {
+        switch path.last {
+        case .activeWorkout: workouts.run != nil
+        case .score: scores.game.live
+        case .cooking: cook.session != nil
+        default: false
+        }
     }
 
     private func subtitle(_ app: RunesApp) -> String {

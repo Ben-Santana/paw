@@ -573,6 +573,7 @@ struct WorkoutSettingsScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 36) {
                     gestures
+                    SwitchControlsBlock()
                     Block {
                         HairlineSegments(selection: Binding(get: { store.sensitivity }, set: store.setSensitivity),
                                          options: RepSensitivity.allCases, title: \.title)

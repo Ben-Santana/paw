@@ -35,9 +35,14 @@ final class MappingStore: ObservableObject {
         configureEngine()
     }
     func isSuspended(_ mapping: Mapping) -> Bool { mapping.uses(reserved) }
+    /// The switch-controls combo, while an app runs and the regular controls have the band
+    /// (`ControlSwitch`). Nil the rest of the time: the running app listens for it instead.
+    var switchMapping: Mapping? { didSet { if switchMapping != oldValue { configureEngine() } } }
+    /// Sets the combo that switches between a running app's controls and these mappings, or clears it.
+    func setSwitchControls(_ combo: SwitchCombo?) { update { $0.switchControls = combo } }
     private func configureEngine() {
         let wanted = motionWanted
-        engine.configure(library.active.mappings.filter { !$0.uses(reserved) })
+        engine.configure(SwitchControls.adding(switchMapping, to: library.active.mappings.filter { !$0.uses(reserved) }))
         if motionWanted != wanted { onMotionDemand?(motionWanted) }
         stopTickerIfIdle()
     }
@@ -198,6 +203,11 @@ final class MappingStore: ObservableObject {
             case .input(let input):
                 recent = Array((recent + [RecentGesture(id: input.id, step: input.step)]).suffix(5))
             case .fire(let id, let inputs):
+                if id == SwitchControls.mappingID {
+                    recent = recent.map { r in var r = r; if inputs.contains(r.id) { r.ranMapping = true }; return r }
+                    if !paused { ControlSwitch.shared.toggle() }
+                    continue
+                }
                 guard let mapping = active.mappings.first(where: { $0.id == id }) else { continue }
                 recent = recent.map { r in var r = r; if inputs.contains(r.id) { r.ranMapping = true }; return r }
                 lastFired = (id, Date())

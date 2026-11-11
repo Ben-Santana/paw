@@ -3,7 +3,8 @@ import SwiftUI
 // Score: full screen, one player at a time, in their colour. Tap to add a point, the bar
 // in the corner to take one away, the name to rename or remove. Swipe sideways for the
 // other players (left for the next, like turning a page) and up to zoom out to everyone at once (the player's box shrinks into its
-// tile), where the game is started, reset and given more players. A swipe up on the band
+// tile), where the game is started, reset, given more players and a game type (tennis,
+// table tennis, the user's own: `ScoreTypesView.swift`). A swipe up on the band
 // does the same zoom, in or out, while this screen is in view. A game is kept from the band with the phone away (see `ScoreControls`; Score settings chooses the gestures and sounds),
 // and the screen follows whoever was changed last. The phone stays awake on this screen,
 // and it is the only one that turns to landscape.
@@ -21,6 +22,7 @@ struct ScoreScreen: View {
     @State private var editing: EditedPlayer?
     @State private var appeared = false
     @State private var showSettings = false
+    @State private var showTypes = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -43,6 +45,7 @@ struct ScoreScreen: View {
             showAll: { show(all: $0) },
             back: { dismiss() },
             settings: { showSettings = true },
+            types: { showTypes = true },
             hints: { index in
                 // A player's own triggers, or the selected-player ones while they're selected.
                 let c = store.controls, selected = store.game.selected == index
@@ -93,6 +96,8 @@ struct ScoreScreen: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { LucideIcon(.settings, size: 19) }
                         .accessibilityLabel("Score settings")
+                    Button { showTypes = true } label: { LucideIcon(.trophy, size: 19) }
+                        .accessibilityLabel("Game type").accessibilityValue(store.game.rules.name)
                     Button { withAnimation(.entrance) { store.addPlayer() } } label: { LucideIcon(.plus, size: 20) }
                         .disabled(!store.game.canAdd)
                         .accessibilityLabel("Add player")
@@ -102,6 +107,7 @@ struct ScoreScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .statusBarHidden(!showAll)
         .sheet(isPresented: $showSettings) { ScoreSettingsScreen(store: store) }
+        .sheet(isPresented: $showTypes) { GameTypeScreen(store: store) }
         .confirmationDialog("Reset the score?", isPresented: $confirmReset, titleVisibility: .visible) {
             Button("Reset score", role: .destructive) { store.reset() }
         } message: { Text("Everyone goes back to zero.") }
@@ -156,6 +162,7 @@ struct ScoreActions {
     var showAll: (Bool) -> Void = { _ in }
     var back: () -> Void = {}
     var settings: () -> Void = {}
+    var types: () -> Void = {}
     /// The band triggers that reach a player right now, shown in their corner.
     var hints: (Int) -> [ScoreHint] = { _ in [] }
 }
@@ -253,18 +260,31 @@ private struct PlayerFace: View {
     var actions = ScoreActions()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bump = false
+    /// How many characters the number had before its latest change. A digit coming or going
+    /// (10 → 9) mustn't bounce: the spring would overshoot the leaving digit's fade, and it
+    /// would flicker back before it's gone.
+    @State private var drawnCount: Int?
 
     private var player: ScorePlayer { game.players[index] }
+    private var numberAnimation: Animation {
+        label.count == (drawnCount ?? label.count)
+            ? .spring(duration: 0.3, bounce: 0.3)
+            : .spring(duration: 0.25, bounce: 0)
+    }
     private var ink: Color { ScoreTint.ink(player.tint) }
     /// The player side swipes have reached; with more than two, the one the index finger changes.
     private var selected: Bool { game.selected == index }
+    /// The points as the game type reads them: a number, or tennis's 15, 30, 40 and Ad.
+    private var label: String { game.points(index) }
+    /// Everything the player has won, so haptics and the bump follow a won game too.
+    private var tally: Int { player.sets * 1_000_000 + player.games * 1_000 + player.score }
     private var tileSize: CGFloat {
         let base: CGFloat = game.players.count > 4 ? 64 : game.players.count > 2 ? 88 : 120
-        return player.score > 999 ? base * 0.5 : player.score > 99 ? base * 0.64 : base
+        return label.count > 3 ? base * 0.5 : label.count > 2 ? base * 0.64 : base
     }
     private var drawnSize: CGFloat {
         guard let screen else { return tileSize }
-        let base: CGFloat = player.score > 999 ? 120 : player.score > 99 ? 170 : 240
+        let base: CGFloat = label.count > 3 ? 120 : label.count > 2 ? 170 : 240
         return max(tileSize, min(base, screen.height * 0.5))
     }
 
@@ -278,17 +298,31 @@ private struct PlayerFace: View {
                         .strokeBorder(.white, lineWidth: 3).opacity(!expanded && selected ? 1 : 0)
                 }
                 .overlay {
-                    Text("\(player.score)")
+                    Text(label)
                         .font(.geist(drawnSize, .semibold, relativeTo: .largeTitle)).monospacedDigit()
                         .fixedSize()
                         .contentTransition(.numericText(value: Double(player.score)))
-                        .animation(.spring(duration: 0.3, bounce: 0.3), value: player.score)
+                        .animation(numberAnimation, value: label)
+                        .onChange(of: label, initial: true) { _, new in drawnCount = new.count }
                         .scaleEffect((expanded ? 1 : tileSize / drawnSize) * (bump && !reduceMotion ? 1.07 : 1))
+                }
+                // Under the number, near the end of a game: the points still to win it.
+                .overlay {
+                    let size = expanded ? drawnSize : tileSize
+                    ZStack {
+                        if let left = game.toGo(index) {
+                            ToGo(left: left, large: expanded).transition(.scale(scale: 0.6).combined(with: .opacity))
+                        }
+                    }
+                    .offset(y: size * 0.5 + (expanded ? 22 : 10))
+                    .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.35), value: game.toGo(index))
+                    .allowsHitTesting(false)
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { actions.change(index, 1) }
                 .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton)
-                .accessibilityLabel("\(player.name), \(player.score)")
+                .accessibilityLabel([player.name, label, game.standing(index), game.pointName(index) ?? game.toGo(index).map { "\($0) to win the game" }]
+                    .compactMap { $0 }.joined(separator: ", "))
                 .accessibilityHint("Adds a point.")
                 .accessibilityAddTraits(!expanded && selected ? .isSelected : [])
 
@@ -307,9 +341,16 @@ private struct PlayerFace: View {
                     .accessibilityHint("Renames or removes this player.")
                     Color.clear.frame(width: expanded ? Metric.tap : 0, height: Metric.tap)
                 }
+                // Games and sets won, for game types that count them, and who won the match.
+                if let standing = game.standing(index) {
+                    Text(standing).font(.label).monospacedDigit().lineLimit(1).fixedSize().opacity(0.8)
+                        .scaleEffect(expanded ? 1 : 0.8).padding(.top, expanded ? -6 : -12)
+                        .contentTransition(.numericText()).animation(.standard, value: standing)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
                 Spacer().allowsHitTesting(false)
                 HStack(spacing: 0) {
-                    MinusBar(name: player.name, score: player.score) { actions.change(index, -1) }
+                    MinusBar(name: player.name, enabled: game.canTake(index)) { actions.change(index, -1) }
                     Spacer(minLength: 0).allowsHitTesting(false)
                     hints.padding(.trailing, 10).allowsHitTesting(false)
                 }
@@ -336,8 +377,9 @@ private struct PlayerFace: View {
             .padding(.trailing, expanded ? max(insets.trailing, 12) : 8)
         }
         .foregroundStyle(ink)
-        .sensoryFeedback(trigger: player.score) { old, new in active ? (new > old ? .increase : .decrease) : nil }
-        .onChange(of: player.score) { _, _ in
+        // Only the player who was changed: a won game also puts the others back to zero.
+        .sensoryFeedback(trigger: tally) { old, new in active && selected ? (new > old ? .increase : .decrease) : nil }
+        .onChange(of: tally) { _, _ in
             guard !reduceMotion else { return }
             bump = true
             withAnimation(.spring(duration: 0.35, bounce: 0.5)) { bump = false }
@@ -356,10 +398,44 @@ private struct PlayerFace: View {
     }
 }
 
+/// The points a player still needs to win the game, lead included, as open rings that close
+/// up one by one; whatever lead the game type asks for, it is the same count. The last one
+/// is filled and beats, with no words: game, set or match point is read out by VoiceOver
+/// and said by the band's confirmation. More than eight is said in a line instead.
+private struct ToGo: View {
+    let left: Int
+    let large: Bool
+    @State private var beat = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let pip: CGFloat = large ? 11 : 7
+        HStack(spacing: large ? 8 : 5) {
+            if left > 8 {
+                Text("\(left) to go").font(large ? .label : .caption).monospacedDigit().contentTransition(.numericText(value: Double(left)))
+            } else {
+                ForEach(0..<left, id: \.self) { _ in
+                    Circle().strokeBorder(lineWidth: large ? 2 : 1.5).background(Circle().opacity(left == 1 ? 1 : 0))
+                        .frame(width: pip, height: pip)
+                        .scaleEffect(left == 1 && beat ? 1.45 : 1)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+        }
+        .opacity(0.85)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { beat = true }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// A bare, heavy bar in the corner that takes a point away, as in the web scorekeeper.
 private struct MinusBar: View {
     let name: String
-    let score: Int
+    /// False when the player has nothing to take back.
+    let enabled: Bool
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -367,7 +443,7 @@ private struct MinusBar: View {
                 .frame(width: Metric.row, height: Metric.row).contentShape(Rectangle())
         }
         .buttonStyle(CornerPress())
-        .disabled(score == 0).opacity(score == 0 ? 0.25 : 0.6)
+        .disabled(!enabled).opacity(enabled ? 0.6 : 0.25)
         .accessibilityLabel("Take a point from \(name)")
     }
 }
@@ -416,11 +492,12 @@ struct ScoreBoard: View {
                     // On its side the controls stand beside the scores, which need the height.
                     HStack(spacing: 12) {
                         grid(wide: true)
-                        VStack(spacing: 4) { startButton; resetButton }.frame(width: 170)
+                        VStack(spacing: 4) { typeLine; startButton; resetButton }.frame(width: 170)
                     }
                     .padding(.leading, 4).padding(.trailing, 12).padding(.top, 4)
                 } else {
-                    grid(wide: false).padding(.horizontal, 4).padding(.top, 4).padding(.bottom, 20)
+                    grid(wide: false).padding(.horizontal, 4).padding(.top, 4).padding(.bottom, game.rules.points == nil ? 20 : 6)
+                    typeLine.padding(.horizontal, Metric.gutter).padding(.bottom, 6)
                     HStack(spacing: 18) { resetButton; startButton }
                         .padding(.horizontal, Metric.gutter).padding(.bottom, 8)
                 }
@@ -453,6 +530,19 @@ struct ScoreBoard: View {
             }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// The game type and its rules, when there are any; tapping it chooses another.
+    @ViewBuilder private var typeLine: some View {
+        if game.rules.points != nil {
+            Button(action: actions.types) {
+                Text("\(game.rules.name) · \(game.rules.detail)").font(.caption).foregroundStyle(Color.muted)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: 36).contentShape(Rectangle())
+            }
+            .buttonStyle(PressRow())
+            .accessibilityHint("Chooses the game type.")
+        }
     }
 
     private var resetButton: some View {
@@ -530,9 +620,30 @@ extension PreviewFixtures {
         game.live = live
         return game
     }
+    /// A tennis match part-way through: a set each way and deuce in the third.
+    static func tennis() -> ScoreGame {
+        var game = ScoreGame()
+        game.rename(0, to: "Sam"); game.rename(1, to: "Alex")
+        game.play(ScoreRules.presets.first { $0.id == "tennis" } ?? .open)
+        for (player, games) in [(0, 6), (1, 6), (0, 2), (1, 3)] { for _ in 0..<games * 4 { game.change(player, by: 1) } }
+        for player in [0, 1, 0, 1, 0, 1, 0] { game.change(player, by: 1) }
+        game.live = true
+        return game
+    }
+    /// Table tennis at ten all, then one more point if `ahead`: two to go each, or game point.
+    static func deuce(ahead: Bool = false) -> ScoreGame {
+        var game = ScoreGame()
+        game.rename(0, to: "Sam"); game.rename(1, to: "Alex")
+        game.play(ScoreRules.presets.first { $0.id == "table-tennis" } ?? .open)
+        for player in [0, 1] { for _ in 0..<10 { game.change(player, by: 1) } }
+        if ahead { game.change(0, by: 1) }
+        game.live = true
+        return game
+    }
 }
 
 #Preview("Score · live") { NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.score(7, 4))) } }
 #Preview("Score · all four") { NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.score(7, 4, 11, 2)), showAll: true) } }
+#Preview("Score · tennis") { NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.tennis()), showAll: true) } }
 #Preview("Score · idle") { NavigationStack { ScoreScreen(store: ScoreStore(preview: PreviewFixtures.score(0, 0, live: false))) } }
 #endif

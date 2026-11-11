@@ -54,6 +54,10 @@ struct MappingsScreen: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    // Not part of any profile: the same combo whichever one is active.
+                    MappingGroup("While an app runs", caption: "One combo for Workouts, Score and Cook, the same in every profile. Make it while one of them runs and these mappings work again; make it again to go back.") {
+                        SwitchControlsRow().padding(.horizontal, Metric.inset)
+                    }
                 }
                 .padding(Metric.gutter)
             }
@@ -386,7 +390,8 @@ struct MappingEditor: View {
             TriggerComposer(steps: Binding(get: { mapping.steps ?? [] }, set: { steps in edit { $0.steps = steps } }),
                             interval: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
                             rules: .combo,
-                            note: mapping.usesMotion ? "Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
+                            note: ControlSwitch.shared.combo?.steps == mapping.steps ? "Switch controls uses these steps, so this combo is off while an app runs. Change one of them."
+                                : mapping.usesMotion ? "Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
                                                      : "Touch a step to change, move or remove it.",
                             feed: store, collapses: true)
                 .padding(Metric.inset)

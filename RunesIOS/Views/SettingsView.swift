@@ -47,7 +47,7 @@ struct SettingsView<Advanced: View>: View {
                                 HStack {
                                     Text(mac.name).font(.bodyText)
                                     Spacer()
-                                    Text(mac.state == .connected ? "Connected" : mac.statusText.replacingOccurrences(of: mac.name, with: "Mac"))
+                                    Text(mac.statusText.replacingOccurrences(of: mac.name, with: "Mac"))
                                         .font(.bodyText).foregroundStyle(Color.muted).lineLimit(1)
                                 }
                                 .panelRow()

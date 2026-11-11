@@ -23,7 +23,7 @@ final class CookStore: ObservableObject {
     }
 
     @Published private(set) var recipes: [Recipe]
-    @Published private(set) var controls: CookControls { didSet { if !previewOnly { decider.configure(controls.mappings) }; motionChanged() } }
+    @Published private(set) var controls: CookControls { didSet { configureDecider(); motionChanged() } }
     /// Sounds for steps and timers while Runes is open. A finished timer always notifies.
     @Published private(set) var sounds: Bool
     @Published private(set) var session: CookSession? { didSet { if (oldValue == nil) != (session == nil) { motionChanged() } } }
@@ -55,7 +55,19 @@ final class CookStore: ObservableObject {
     private var scheduled: Set<String> = []
     private var askedToNotify = false
 
-    private var reservedNow: Set<GestureKind> { session == nil ? [] : controls.reserved }
+    private var reservedNow: Set<GestureKind> {
+        session == nil || yielded ? [] : controls.reserved.union(SwitchControls.reserved(switchMapping))
+    }
+    /// The switch-controls combo, while this is the app the band switches to and from and
+    /// its controls are selected. Set by `ControlSwitch`.
+    var switchMapping: Mapping? {
+        didSet { if switchMapping != oldValue { configureDecider(); if !previewOnly { onReserve?(reservedNow) } } }
+    }
+    /// True while the regular mappings have the band though a recipe is being cooked. Timers keep running.
+    var yielded = false { didSet { if yielded != oldValue, !previewOnly { onReserve?(reservedNow) } } }
+    private func configureDecider() {
+        if !previewOnly { decider.configure(SwitchControls.adding(switchMapping, to: controls.mappings)) }
+    }
 
     private init() {
         var saved = Saved(recipes: [.starter])
@@ -67,7 +79,9 @@ final class CookStore: ObservableObject {
         session = saved.session
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
         decider.onFire = { [weak self] id in
-            guard let self, let command = self.controls.command(forMapping: id) else { return }
+            guard let self else { return }
+            if id == SwitchControls.mappingID { if self.session != nil { ControlSwitch.shared.toggle() }; return }
+            guard let command = self.controls.command(forMapping: id) else { return }
             self.perform(command)
         }
         decider.configure(controls.mappings)

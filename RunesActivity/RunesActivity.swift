@@ -271,17 +271,34 @@ private struct ScoreRow: View {
         let count = score.names.count
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             ForEach(0..<count, id: \.self) { index in
-                VStack(spacing: 0) {
-                    HStack(spacing: 4) {
-                        Circle().fill(ScoreTint.fill(score.tint(index))).frame(width: 7, height: 7)
-                        Text(score.name(index)).font(.caption).lineLimit(1)
-                            .foregroundStyle(score.selected == index ? .primary : .secondary)
+                // No names: the colour says who. A ring round it marks the player the band changes.
+                VStack(spacing: 2) {
+                    HStack(spacing: 5) {
+                        Circle().fill(ScoreTint.fill(score.tint(index))).frame(width: 9, height: 9)
+                            .overlay { if score.selected == index { Circle().stroke(.primary, lineWidth: 1.5).padding(-3.5) } }
+                        if let standing = score.standing(index) {
+                            Text(standing).font(.caption).monospacedDigit().lineLimit(1).foregroundStyle(.secondary)
+                        }
                     }
-                    Text("\(score.value(index))")
+                    .frame(height: 16)
+                    Text(score.value(index))
                         .font(.system(size: count > 4 ? 22 : count > 2 ? 28 : 34, weight: .medium).monospacedDigit())
                         .contentTransition(.numericText())
+                    // The points still to win the game, as on the score screen: open rings,
+                    // and the last one filled.
+                    HStack(spacing: 4) {
+                        let left = score.left(index)
+                        ForEach(0..<min(left, 6), id: \.self) { _ in
+                            Circle().strokeBorder(.primary, lineWidth: 1.2)
+                                .background(Circle().fill(.primary).opacity(left == 1 ? 1 : 0))
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .frame(height: 12)
                 }
                 .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([score.name(index), score.value(index), score.standing(index), score.pointName(index)].compactMap { $0 }.joined(separator: ", "))
             }
         }
     }
@@ -289,7 +306,19 @@ private struct ScoreRow: View {
 
 private extension ScoreActivityState {
     func name(_ index: Int) -> String { names.indices.contains(index) ? names[index] : "" }
-    func value(_ index: Int) -> Int { scores.indices.contains(index) ? scores[index] : 0 }
+    func value(_ index: Int) -> String {
+        if let labels, labels.indices.contains(index) { return labels[index] }
+        return scores.indices.contains(index) ? "\(scores[index])" : "0"
+    }
+    func standing(_ index: Int) -> String? {
+        guard let standings, standings.indices.contains(index), !standings[index].isEmpty else { return nil }
+        return standings[index]
+    }
+    func left(_ index: Int) -> Int { toGo.map { $0.indices.contains(index) ? max(0, $0[index]) : 0 } ?? 0 }
+    func pointName(_ index: Int) -> String? {
+        guard let pointNames, pointNames.indices.contains(index), !pointNames[index].isEmpty else { return nil }
+        return pointNames[index]
+    }
     func tint(_ index: Int) -> Int { tints.indices.contains(index) ? tints[index] : index }
 }
 

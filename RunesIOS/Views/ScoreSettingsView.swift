@@ -20,6 +20,7 @@ struct ScoreSettingsScreen: View {
                     actionsBlock("Each player", ScoreAction.all.filter { $0.player != nil },
                                  note: "Optional: give a player their own gesture or combo, so you can score them without selecting them first.")
                     Button("Reset gestures") { store.resetGestures() }.buttonStyle(.quiet)
+                    SwitchControlsBlock()
                     soundsBlock
                     playersBlock
                 }

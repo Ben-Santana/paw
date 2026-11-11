@@ -3,9 +3,74 @@ import Foundation
 struct ScorePlayer: Codable, Equatable, Identifiable, Sendable {
     var id = UUID().uuidString.lowercased()
     var name: String
+    /// Points in the game being played.
     var score = 0
+    /// Games won in this set, and sets won, for game types that count them.
+    var games = 0
+    var sets = 0
     /// Index into `ScoreTint`; a player keeps their colour when others come and go.
     var tint: Int
+
+    init(name: String, tint: Int) { self.name = name; self.tint = tint }
+
+    private enum Keys: String, CodingKey { case id, name, score, games, sets, tint }
+    /// Games and sets are missing in games saved before there were game types.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        score = try c.decode(Int.self, forKey: .score)
+        games = try c.decodeIfPresent(Int.self, forKey: .games) ?? 0
+        sets = try c.decodeIfPresent(Int.self, forKey: .sets) ?? 0
+        tint = try c.decode(Int.self, forKey: .tint)
+    }
+}
+
+/// A game type: how points become games, sets and a win. Free play has no end; the rest
+/// are sports, or the user's own. Pure values, so they are tested without a band.
+struct ScoreRules: Codable, Hashable, Identifiable, Sendable {
+    static let nameLimit = 24
+
+    var id: String
+    var name: String
+    /// Points that win a game; nil counts up with no end.
+    var points: Int?
+    /// The lead a game is won by.
+    var winBy = 1
+    /// Games that win a set. With one set, these win the match.
+    var games = 1
+    var gamesWinBy = 1
+    /// Sets that win the match.
+    var sets = 1
+    /// Points read 0, 15, 30, 40 and Ad, and a tiebreak to seven settles a set at games all.
+    var tennis = false
+
+    static let open = ScoreRules(id: "open", name: "Free play")
+    static let presets: [ScoreRules] = [
+        open,
+        ScoreRules(id: "tennis", name: "Tennis", points: 4, winBy: 2, games: 6, gamesWinBy: 2, sets: 2, tennis: true),
+        ScoreRules(id: "table-tennis", name: "Table tennis", points: 11, winBy: 2, games: 3),
+        ScoreRules(id: "badminton", name: "Badminton", points: 21, winBy: 2, games: 2),
+        ScoreRules(id: "pickleball", name: "Pickleball", points: 11, winBy: 2, games: 2),
+        ScoreRules(id: "squash", name: "Squash", points: 11, winBy: 2, games: 3),
+        ScoreRules(id: "volleyball", name: "Volleyball", points: 25, winBy: 2, sets: 3),
+    ]
+    var isPreset: Bool { Self.presets.contains { $0.id == id } }
+
+    /// A type of the user's own: first to `points`, by any lead up to `points` itself, over a number of games.
+    static func custom(id: String = "custom-" + UUID().uuidString.lowercased(), name: String, points: Int, winBy: Int, games: Int) -> ScoreRules {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(nameLimit))
+        return ScoreRules(id: id, name: trimmed.isEmpty ? "My game" : trimmed, points: max(1, points), winBy: min(max(winBy, 1), max(1, points)), games: max(1, games))
+    }
+
+    /// The rules in a sentence, under the name wherever types are listed.
+    var detail: String {
+        guard let points else { return "No limit. Count as high as you like." }
+        if tennis { return "Best of \(sets * 2 - 1) sets of \(games) games, with a tiebreak at \(games) all." }
+        var text = "First to \(points)" + (winBy > 1 ? ", \(winBy) clear" : "")
+        if sets > 1 { text += ". Best of \(sets * 2 - 1) sets" } else if games > 1 { text += ". Best of \(games * 2 - 1) games" }
+        return text + "."
+    }
 }
 
 /// A game of two to six players kept from the band. Pure value type, so it is tested
@@ -21,21 +86,136 @@ struct ScoreGame: Codable, Equatable, Sendable {
     private(set) var selected = 0
     /// While live, the game's gestures change the score and mappings that use them are off.
     var live = false
+    /// The game type being played.
+    private(set) var rules = ScoreRules.open
+    /// Who has won the match. Nobody scores after that until it is reset.
+    private(set) var winner: Int?
+    /// Everyone's tallies before the point that last won a game, so the winner taking that
+    /// point back puts the game back as it was.
+    private var undo: Undo?
+
+    private struct Undo: Codable, Equatable, Sendable {
+        var winner: Int
+        /// Points, games and sets for each player.
+        var tallies: [[Int]]
+    }
 
     var names: [String] { players.map(\.name) }
     var scores: [Int] { players.map(\.score) }
-    var isEmpty: Bool { players.allSatisfy { $0.score == 0 } }
+    var isEmpty: Bool { players.allSatisfy { $0.score == 0 && $0.games == 0 && $0.sets == 0 } }
+    /// Goes up with every point, game and set won, and down when one is taken back.
+    var progress: Int { players.reduce(0) { $0 + $1.sets * 1_000_000 + $1.games * 1_000 + $1.score } }
+    /// Tennis at games all: this game is a tiebreak, first to seven by two, and wins the set.
+    var tiebreak: Bool { rules.tennis && players.filter { $0.games >= rules.games }.count > 1 }
     var canAdd: Bool { players.count < Self.maxPlayers }
     var canRemove: Bool { players.count > Self.minPlayers }
     /// Two players have a finger each. With more, the band changes one selected player
     /// and steps between them.
     var usesSelection: Bool { players.count > 2 }
 
-    /// Adds `delta` to a player and selects them. A score never goes below zero.
+    /// Adds `delta` to a player and selects them. A score never goes below zero. A point
+    /// that reaches the game type's target wins the game, and with it perhaps the set and
+    /// the match; the winner taking a point back straight after undoes that.
     mutating func change(_ index: Int, by delta: Int) {
         guard players.indices.contains(index) else { return }
-        players[index].score = max(0, players[index].score + delta)
         selected = index
+        guard delta != 0 else { return }
+        if delta < 0, let undo, undo.winner == index, undo.tallies.count == players.count {
+            for (i, tally) in undo.tallies.enumerated() { (players[i].score, players[i].games, players[i].sets) = (tally[0], tally[1], tally[2]) }
+            winner = nil; self.undo = nil
+            return
+        }
+        guard delta < 0 || winner == nil else { return }
+        let before = players.map { [$0.score, $0.games, $0.sets] }
+        undo = nil
+        players[index].score = max(0, players[index].score + delta)
+        if delta > 0 { settle(index, before: before) }
+    }
+
+    /// Whether a player has anything to take back: a point, or the game they just won.
+    func canTake(_ index: Int) -> Bool {
+        players.indices.contains(index) && (players[index].score > 0 || undo?.winner == index)
+    }
+
+    /// Gives the player their game if the point just added won it, then the set and the
+    /// match if the game did. Points start again after a game, games after a set; the
+    /// match's last tallies stay as they are.
+    private mutating func settle(_ index: Int, before: [[Int]]) {
+        guard toGo(index, after: 0) == 0 else { return }
+        func lead(_ tally: KeyPath<ScorePlayer, Int>) -> Int {
+            players[index][keyPath: tally] - (players.indices.filter { $0 != index }.map { players[$0][keyPath: tally] }.max() ?? 0)
+        }
+        let decider = tiebreak
+        players[index].games += 1
+        let set = decider || (players[index].games >= rules.games && lead(\.games) >= rules.gamesWinBy)
+        if set { players[index].sets += 1 }
+        if set, players[index].sets >= rules.sets {
+            winner = index
+        } else {
+            for i in players.indices {
+                players[i].score = 0
+                if set { players[i].games = 0 }
+            }
+        }
+        undo = Undo(winner: index, tallies: before)
+    }
+
+    /// The points and the lead that win the game being played; nil in free play.
+    private var goal: (points: Int, by: Int)? {
+        rules.points.map { tiebreak ? (7, 2) : ($0, rules.winBy) }
+    }
+
+    /// Points the player still needs for the game, were everyone else to stand still:
+    /// enough to reach the target, and enough to be far enough ahead.
+    private func toGo(_ index: Int, after floor: Int) -> Int? {
+        guard let goal, players.indices.contains(index) else { return nil }
+        let own = players[index].score
+        let other = players.indices.filter { $0 != index }.map { players[$0].score }.max() ?? 0
+        return max(goal.points - own, other + goal.by - own, floor)
+    }
+
+    /// Points the player still needs to win the game, counted down on their face once the
+    /// end is near: within the lead the game is won by, or three points. Nil before then,
+    /// in free play, and once the match is won.
+    func toGo(_ index: Int) -> Int? {
+        guard winner == nil, let goal, let left = toGo(index, after: 1), left <= max(goal.by, 3) else { return nil }
+        return left
+    }
+
+    /// What the player's next point would win, when it would win something: "Game point",
+    /// "Set point" or "Match point".
+    func pointName(_ index: Int) -> String? {
+        guard toGo(index) == 1 else { return nil }
+        var next = self
+        next.change(index, by: 1)
+        if next.winner == index { return "Match point" }
+        return next.players[index].sets > players[index].sets ? "Set point" : "Game point"
+    }
+
+    /// Switches to another game type. Everyone starts from zero.
+    mutating func play(_ rules: ScoreRules) {
+        guard rules != self.rules else { return }
+        self.rules = rules
+        reset()
+    }
+
+    /// A player's points as the game type reads them: a number, or tennis's 15, 30, 40 and Ad.
+    func points(_ index: Int) -> String {
+        guard players.indices.contains(index) else { return "" }
+        let own = players[index].score
+        guard rules.tennis, !tiebreak else { return "\(own)" }
+        let other = players.indices.filter { $0 != index }.map { players[$0].score }.max() ?? 0
+        if own >= 3, other >= 3 { return own > other ? "Ad" : "40" }
+        return ["0", "15", "30", "40"][min(own, 3)]
+    }
+
+    /// "Sets 1 · Games 3", for game types that count them, and whether the player has won.
+    func standing(_ index: Int) -> String? {
+        guard players.indices.contains(index) else { return nil }
+        var parts = winner == index ? ["Won"] : []
+        if rules.sets > 1 { parts.append("Sets \(players[index].sets)") }
+        if rules.games > 1 { parts.append("Games \(players[index].games)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     mutating func select(_ index: Int) {
@@ -47,7 +227,10 @@ struct ScoreGame: Codable, Equatable, Sendable {
         selected = ((selected + step) % players.count + players.count) % players.count
     }
 
-    mutating func reset() { for i in players.indices { players[i].score = 0 } }
+    mutating func reset() {
+        for i in players.indices { (players[i].score, players[i].games, players[i].sets) = (0, 0, 0) }
+        winner = nil; undo = nil
+    }
 
     /// Adds a player with the first colour nobody has. False when the game is full.
     @discardableResult
@@ -56,6 +239,7 @@ struct ScoreGame: Codable, Equatable, Sendable {
         let used = Set(players.map(\.tint))
         let tint = (0..<Self.maxPlayers).first { !used.contains($0) } ?? players.count
         players.append(ScorePlayer(name: Self.defaultName(players.count), tint: tint))
+        undo = nil
         return true
     }
 
@@ -64,6 +248,8 @@ struct ScoreGame: Codable, Equatable, Sendable {
     mutating func removePlayer(_ index: Int) -> Bool {
         guard canRemove, players.indices.contains(index) else { return false }
         players.remove(at: index)
+        undo = nil
+        if let won = winner { winner = won == index ? nil : won > index ? won - 1 : won }
         if selected > index || selected >= players.count { selected = max(0, selected - 1) }
         return true
     }
@@ -74,8 +260,24 @@ struct ScoreGame: Codable, Equatable, Sendable {
         players[index].name = trimmed.isEmpty ? Self.defaultName(index) : trimmed
     }
 
-    /// "Player 1 3 · Player 2 2", for the applications list.
-    var summary: String { players.map { "\($0.name) \($0.score)" }.joined(separator: " · ") }
+    /// "Player 1 3 · Player 2 2", for the applications list. Game types that count games
+    /// and sets add them: "… · Games 2–1 · Sets 1–0".
+    var summary: String {
+        var parts = players.indices.map { "\(players[$0].name) \(points($0))" }
+        if rules.games > 1 { parts.append("Games " + players.map { "\($0.games)" }.joined(separator: "–")) }
+        if rules.sets > 1 { parts.append("Sets " + players.map { "\($0.sets)" }.joined(separator: "–")) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// What a point just won, said first in the band's confirmation: "Game, Sam".
+    private func won(since old: ScoreGame) -> String? {
+        guard players.indices.contains(selected), old.players.indices.contains(selected) else { return nil }
+        let now = players[selected], then = old.players[selected]
+        if winner == selected, old.winner == nil { return "\(now.name) wins" }
+        if now.sets > then.sets { return "Set, \(now.name)" }
+        if now.games > then.games { return "Game, \(now.name)" }
+        return nil
+    }
 
     /// Carries out a band action and returns a line confirming it, or nil when the action
     /// names a player who isn't in the game.
@@ -83,16 +285,35 @@ struct ScoreGame: Codable, Equatable, Sendable {
     mutating func apply(_ action: ScoreAction) -> String? {
         switch action {
         case .addSelected, .takeSelected:
+            let old = self
             change(selected, by: action == .addSelected ? 1 : -1)
-            return "\(players[selected].name) \(players[selected].score)"
+            if let won = won(since: old) { return won + " · " + summary }
+            return (pointName(selected).map { $0 + " · " } ?? "") + "\(players[selected].name) \(points(selected))"
         case .add(let index), .take(let index):
             guard players.indices.contains(index) else { return nil }
+            let old = self
             change(index, by: action == .add(index) ? 1 : -1)
-            return summary
+            return ((won(since: old) ?? pointName(index).map { "\($0), \(players[index].name)" }).map { $0 + " · " } ?? "") + summary
         case .next, .previous:
             select(step: action == .next ? 1 : -1)
-            return "\(players[selected].name), \(players[selected].score)"
+            return "\(players[selected].name), \(points(selected))"
         }
+    }
+
+    private enum Keys: String, CodingKey { case players, selected, live, rules, winner, undo }
+}
+
+extension ScoreGame {
+    /// The game type and its tallies are missing in games saved before there were any.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        self.init()
+        players = try c.decode([ScorePlayer].self, forKey: .players)
+        selected = try c.decode(Int.self, forKey: .selected)
+        live = try c.decode(Bool.self, forKey: .live)
+        rules = (try? c.decodeIfPresent(ScoreRules.self, forKey: .rules)) ?? .open
+        winner = (try? c.decodeIfPresent(Int.self, forKey: .winner)).flatMap { players.indices.contains($0) ? $0 : nil }
+        undo = try? c.decodeIfPresent(Undo.self, forKey: .undo)
     }
 }
 
@@ -340,7 +561,8 @@ enum ScoreCue: Hashable, Sendable {
     /// What changed from `old` to `new`: a score going up or down wins over the selection
     /// (changing a player also selects them). Nil when nothing a listener cares about changed.
     init?(from old: ScoreGame, to new: ScoreGame) {
-        let before = old.scores.reduce(0, +), after = new.scores.reduce(0, +)
+        // Progress, not points: winning a game puts everyone's points back to zero.
+        let before = old.progress, after = new.progress
         if old.players.map(\.id) == new.players.map(\.id), after != before {
             self = after > before ? .add : .subtract
         } else if old.selected != new.selected {

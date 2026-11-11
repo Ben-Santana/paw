@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import Network
 import UIKit
 
 /// Records when this process actually runs and what it is doing, for leases and diagnostics.
@@ -66,6 +67,8 @@ final class WakeProbe: @unchecked Sendable {
 /// Holds the links to every paired Mac. The phone is the BLE central: a pending connect to each known Mac
 /// never times out, so iOS completes it whenever the Mac is reachable, even with this app suspended.
 /// Its queue and peripherals are independent of the band transport.
+///
+/// While the phone is plugged into a Mac, that Mac's link runs over the cable instead (see "Cable").
 final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @unchecked Sendable {
     typealias Demand = RelayWire.Demand
 
@@ -93,6 +96,8 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         var assembler = RelayWire.BindingsAssembler()
         /// Sent after everything else queued, so gestures never wait behind them.
         var bindingsOut: [RelayWire.Message] = []
+        /// Set while this link's session runs over the cable. Its Bluetooth connection is closed meanwhile.
+        var usb: Cable?
 
         init(_ record: RelayKeyStore.Record) {
             self.record = record
@@ -102,6 +107,17 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             inboundID = CBUUID(nsuuid: RelayWire.characteristic(.inbound, of: service))
             bondID = CBUUID(nsuuid: RelayWire.characteristic(.bond, of: service))
         }
+    }
+
+    /// One connection from a Mac over the cable.
+    private final class Cable {
+        let connection: NWConnection
+        var buffer = Data()
+        /// Hello nonces the Mac has not answered yet, by link.
+        var nonces: [UUID: Data] = [:]
+        var unsent = 0
+
+        init(_ connection: NWConnection) { self.connection = connection }
     }
 
     private final class Attempt {
@@ -144,6 +160,8 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var observers: [NSObjectProtocol] = []
     private var bindings: [RelayWire.Binding] = []
     private var bindingsGeneration: UInt16 = 0
+    private var listener: NWListener?
+    private var cables: [Cable] = []
 
     var onDemand: ((Demand) -> Void)?
     var onStatus: ((String) -> Void)?
@@ -166,6 +184,11 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: nil) { [weak self] _ in
                 self?.queue.sync { self?.sayGoodbye(.terminating) }
             })
+            // iOS closes a listening socket when it suspends the app.
+            observers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.queue.async { self?.listenForCable() }
+            })
+            listenForCable()
             if !links.isEmpty { startCentral() }
         }
     }
@@ -283,9 +306,14 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         links.values.first { $0.peripheral === peripheral }
     }
 
+    /// The link a Bluetooth callback is about, unless that link has moved to the cable.
+    private func radioLink(for peripheral: CBPeripheral) -> Link? {
+        link(for: peripheral).flatMap { $0.usb == nil ? $0 : nil }
+    }
+
     /// Starts or renews a pending connect. It has no timeout and no retry limit.
     private func connect(_ link: Link) {
-        guard let central, central.state == .poweredOn, !link.deferred else { return }
+        guard let central, central.state == .poweredOn, !link.deferred, link.usb == nil else { return }
         if link.peripheral == nil, let text = savedPeripherals[link.record.id.uuidString], let id = UUID(uuidString: text),
            let known = central.retrievePeripherals(withIdentifiers: [id]).first,
            !links.values.contains(where: { $0 !== link && $0.peripheral === known }) {
@@ -311,7 +339,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     /// and only a scan finds the Mac under its current one.
     private func updateScan() {
         guard let central, central.state == .poweredOn else { return }
-        var services = Set(links.values.filter { !$0.deferred && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }.map(\.service))
+        var services = Set(links.values.filter { !$0.deferred && $0.usb == nil && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }.map(\.service))
         if let attempt, attempt.peripheral == nil { services.insert(attempt.service) }
         guard services != scanned else { return }
         scanned = services
@@ -328,7 +356,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         guard central.state == .poweredOn else {
             guard central.state != .unknown else { return }
             onDiagnostic?("Mac relay Bluetooth state: \(central.state.rawValue)")
-            for link in links.values { teardown(link, state: .notNearby) }
+            for link in links.values where link.usb == nil { teardown(link, state: .notNearby) }
             publish()
             return
         }
@@ -358,7 +386,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
         guard link(for: peripheral) == nil else { return }
         // A backgrounded scan may not report service UUIDs; service discovery then confirms the match.
-        let waiting = links.values.filter { !$0.deferred && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }
+        let waiting = links.values.filter { !$0.deferred && $0.usb == nil && ($0.peripheral == nil || $0.phase == .idle || $0.phase == .connecting) }
         guard let match = waiting.first(where: { advertised.contains($0.service) }) ?? (advertised.isEmpty ? waiting.first : nil) else { return }
         if let stale = match.peripheral, stale !== peripheral {
             onDiagnostic?("Mac relay identifier changed for \(match.record.name): \(stale.identifier.uuidString) -> \(peripheral.identifier.uuidString)")
@@ -375,12 +403,13 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             return
         }
         guard let link = link(for: peripheral) else { return }
+        guard link.usb == nil else { central.cancelPeripheralConnection(peripheral); return }
         beginSetup(link)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         if let attempt, attempt.peripheral === peripheral { attempt.peripheral = nil; updateScan(); return }
-        guard let link = link(for: peripheral) else { return }
+        guard let link = radioLink(for: peripheral) else { return }
         onDiagnostic?("Mac relay connect failed: \(error?.localizedDescription ?? "unknown")")
         link.phase = .idle
         let epoch = link.epoch
@@ -398,7 +427,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             updateScan()
             return
         }
-        guard let link = link(for: peripheral) else { return }
+        guard let link = radioLink(for: peripheral) else { return }
         let wasLive = link.phase == .live
         onDiagnostic?("Mac relay disconnected \(link.record.name): \(error?.localizedDescription ?? "closed")")
         let next: MacLinks.Mac.State = link.state == .sleeping || link.state == .forgotten || link.state == .needsUpdate
@@ -438,7 +467,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             peripheral.discoverCharacteristics([attempt.controlID, attempt.inboundID, attempt.bondID], for: service)
             return
         }
-        guard let link = link(for: peripheral) else { return }
+        guard let link = radioLink(for: peripheral) else { return }
         guard let service = peripheral.services?.first(where: { $0.uuid == link.service }) else {
             // Right after pairing the Mac may still be publishing the service.
             if error == nil, link.discoveryAttempts < 5 {
@@ -475,7 +504,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             peripheral.setNotifyValue(true, for: control)
             return
         }
-        guard let link = link(for: peripheral), service.uuid == link.service else { return }
+        guard let link = radioLink(for: peripheral), service.uuid == link.service else { return }
         guard error == nil,
               let control = service.characteristics?.first(where: { $0.uuid == link.controlID }),
               let inbound = service.characteristics?.first(where: { $0.uuid == link.inboundID }) else {
@@ -509,7 +538,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             } catch { failPairing(error.localizedDescription) }
             return
         }
-        guard let link = link(for: peripheral), characteristic.uuid == link.controlID else { return }
+        guard let link = radioLink(for: peripheral), characteristic.uuid == link.controlID else { return }
         if error == nil, characteristic.isNotifying {
             if link.phase == .subscribing { sendHello(link) }
         } else {
@@ -519,7 +548,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func sendHello(_ link: Link) {
-        guard link.peripheral?.state == .connected else { return }
+        guard link.usb != nil || link.peripheral?.state == .connected else { return }
         let nonce = RelayWire.random(16)
         link.phase = .hello
         link.nonce = nonce
@@ -528,15 +557,18 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         link.outgoing.removeAll(); link.bindingsOut.removeAll()
         link.helloAttempts += 1
         link.epoch += 1
-        enqueue(link, .raw(RelayWire.phoneHello(link.record.pairing, nonce: nonce)))
+        if let cable = link.usb { offer(link, on: cable) } else { enqueue(link, .raw(RelayWire.phoneHello(link.record.pairing, nonce: nonce))) }
         let epoch = link.epoch
         queue.asyncAfter(deadline: .now() + 5) { [weak self, weak link] in
             guard let self, let link, link.epoch == epoch, link.phase == .hello else { return }
-            if link.helloAttempts >= 3, let peripheral = link.peripheral {
+            if link.helloAttempts < 3 {
+                self.sendHello(link)
+            } else if link.usb != nil {
+                self.onDiagnostic?("Mac relay handshake unanswered on the cable; using Bluetooth")
+                self.unplug(link)
+            } else if let peripheral = link.peripheral {
                 self.onDiagnostic?("Mac relay handshake unanswered; reconnecting")
                 self.central?.cancelPeripheralConnection(peripheral)
-            } else {
-                self.sendHello(link)
             }
         }
     }
@@ -550,7 +582,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             }
             return
         }
-        guard let link = link(for: peripheral) else { return }
+        guard let link = radioLink(for: peripheral) else { return }
         if characteristic.uuid == link.bondID {
             // A refused bond read is logged; the authenticated session does not depend on it.
             onDiagnostic?("Mac relay bond_read ok=\(error == nil) \(error?.localizedDescription ?? "")")
@@ -587,7 +619,10 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             case .reset:
                 // Only a reset naming the current session counts; anything older is stale.
                 let tag = try RelayWire.readReset(packet)
-                if link.phase == .live, tag == link.session?.tag { sendHello(link) }
+                // A Mac that just answered a hello on the cable resets the Bluetooth session it replaced.
+                // Its answer is on the way, so that reset needs no new hello.
+                let moving = link.usb == nil && cables.contains { $0.nonces[link.record.id] != nil }
+                if link.phase == .live, tag == link.session?.tag, !moving { sendHello(link) }
             default:
                 guard header.kind.sealed, link.phase == .live, var session = link.session else { return }
                 // Notifications from an earlier session can arrive after an iOS relaunch. They carry another tag.
@@ -672,6 +707,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func drain(_ link: Link) {
+        if let cable = link.usb { drain(link, over: cable); return }
         guard let peripheral = link.peripheral, let inbound = link.inbound, peripheral.state == .connected else { return }
         let limit = peripheral.maximumWriteValueLength(for: .withoutResponse)
         while peripheral.canSendWriteWithoutResponse, !link.outgoing.isEmpty || !link.bindingsOut.isEmpty {
@@ -699,11 +735,11 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
-        if let link = link(for: peripheral) { drain(link) }
+        if let link = radioLink(for: peripheral) { drain(link) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
-        guard let link = link(for: peripheral), invalidatedServices.contains(where: { $0.uuid == link.service }) else { return }
+        guard let link = radioLink(for: peripheral), invalidatedServices.contains(where: { $0.uuid == link.service }) else { return }
         beginSetup(link)
     }
 
@@ -714,6 +750,163 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         onDiagnostic?("Mac relay skipped \(dropped) stale or queued samples.")
         dropped = 0
         lastDropReport = now
+    }
+
+    // MARK: Cable
+
+    /// Listens where a Mac can reach this app through the cable. usbmuxd on the Mac delivers its connection
+    /// on the phone's loopback interface, so nothing on a network can reach this port.
+    private func listenForCable() {
+        guard listener == nil else { return }
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        let parameters = NWParameters(tls: nil, tcp: tcp)
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: RelayWire.usbPort)!)
+        guard let next = try? NWListener(using: parameters) else {
+            onDiagnostic?("Mac relay cable listener could not start")
+            return
+        }
+        listener = next
+        next.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+        next.stateUpdateHandler = { [weak self, weak next] state in
+            guard let self, let next, self.listener === next else { return }
+            switch state {
+            case .failed(let error):
+                self.onDiagnostic?("Mac relay cable listener stopped: \(error.localizedDescription)")
+                next.cancel()
+                self.listener = nil
+                self.queue.asyncAfter(deadline: .now() + 5) { [weak self] in self?.listenForCable() }
+            case .cancelled:
+                self.listener = nil
+            default:
+                break
+            }
+        }
+        next.start(queue: queue)
+    }
+
+    private func accept(_ connection: NWConnection) {
+        let cable = Cable(connection)
+        cables.append(cable)
+        connection.stateUpdateHandler = { [weak self, weak cable] state in
+            guard let self, let cable else { return }
+            switch state {
+            case .ready:
+                self.onDiagnostic?("Mac relay cable connected")
+                for link in self.links.values { self.offer(link, on: cable) }
+                self.read(cable)
+            case .failed, .cancelled:
+                self.close(cable)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private func read(_ cable: Cable) {
+        cable.connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self, weak cable] data, _, complete, error in
+            guard let self, let cable else { return }
+            if let data {
+                cable.buffer.append(data)
+                guard let frames = try? RelayWire.usbFrames(&cable.buffer) else { self.close(cable); return }
+                for frame in frames { self.receive(frame.packet, service: frame.service, from: cable) }
+            }
+            if complete || error != nil { self.close(cable) } else { self.read(cable) }
+        }
+    }
+
+    /// Says hello over the cable without touching the link's Bluetooth session. Only the Mac that holds
+    /// this pairing can answer, and the link moves to the cable when it does.
+    private func offer(_ link: Link, on cable: Cable) {
+        let id = link.record.id
+        let nonce = RelayWire.random(16)
+        cable.nonces[id] = nonce
+        write(RelayWire.phoneHello(link.record.pairing, nonce: nonce), for: link, on: cable)
+        // Another Mac's cable never answers.
+        queue.asyncAfter(deadline: .now() + 3) { [weak cable] in
+            if cable?.nonces[id] == nonce { cable?.nonces.removeValue(forKey: id) }
+        }
+    }
+
+    private func write(_ packet: Data, for link: Link, on cable: Cable) {
+        cable.unsent += 1
+        cable.connection.send(content: RelayWire.usbFrame(service: link.record.pairing.service, packet), completion: .contentProcessed { [weak self, weak cable] error in
+            guard let self, let cable else { return }
+            cable.unsent -= 1
+            if error != nil { self.close(cable) }
+        })
+    }
+
+    private func receive(_ packet: Data, service: UUID, from cable: Cable) {
+        guard let link = links.values.first(where: { $0.record.pairing.service == service }) else { return }
+        if (try? RelayWire.Header(packet))?.kind == .macHello {
+            guard let nonce = cable.nonces[link.record.id],
+                  let macNonce = try? RelayWire.readMacHello(packet, link.record.pairing, phoneNonce: nonce) else { return }
+            cable.nonces.removeValue(forKey: link.record.id)
+            adopt(cable, for: link, session: RelayWire.Session(link.record.pairing, phoneNonce: nonce, macNonce: macNonce, isPhone: true))
+        } else if link.usb === cable {
+            receive(link, packet)
+        }
+    }
+
+    /// The Mac answered on the cable: its session replaces whatever the link had over Bluetooth.
+    private func adopt(_ cable: Cable, for link: Link, session: RelayWire.Session) {
+        if link.usb !== cable { onDiagnostic?("Mac relay live over the cable: \(link.record.name)") }
+        link.usb = cable
+        link.epoch += 1
+        link.session = session
+        link.phase = .live
+        link.nonce = nil
+        link.ready = nil
+        link.helloAttempts = 0
+        link.control = nil
+        link.inbound = nil
+        link.outgoing.removeAll(); link.bindingsOut.removeAll()
+        link.state = .connected
+        link.lastConnected = Date()
+        // One connection is enough, and an idle one would still take radio time from the band.
+        if let peripheral = link.peripheral, peripheral.state != .disconnected { central?.cancelPeripheralConnection(peripheral) }
+        updateScan()
+        enqueue(link, .message(.lease(seconds: RelayWire.leaseDuration, state: WakeProbe.shared.phoneState), nil))
+        queueBindings(link)
+        updateDemand()
+        publish()
+    }
+
+    private func drain(_ link: Link, over cable: Cable) {
+        while !link.outgoing.isEmpty || !link.bindingsOut.isEmpty {
+            let next: Outgoing = link.outgoing.isEmpty ? .message(link.bindingsOut.removeFirst(), nil) : link.outgoing.removeFirst()
+            guard case .message(let message, let event) = next, var session = link.session else { continue }
+            if let event, !event.isRelease {
+                let age = ProcessInfo.processInfo.systemUptime - event.phoneUptime
+                // Motion is not queued behind a Mac that has stopped reading.
+                if age > (event.kind == .gesture ? RelayWire.gestureMaxAge : RelayWire.motionMaxAge) || (event.kind != .gesture && cable.unsent > 64) {
+                    noteDropped(); continue
+                }
+            }
+            guard let packet = try? session.seal(message) else { onDiagnostic?("Mac relay could not encode a message"); continue }
+            link.session = session
+            write(packet, for: link, on: cable)
+        }
+    }
+
+    private func close(_ cable: Cable) {
+        guard let index = cables.firstIndex(where: { $0 === cable }) else { return }
+        cables.remove(at: index)
+        cable.connection.cancel()
+        onDiagnostic?("Mac relay cable disconnected")
+        for link in links.values where link.usb === cable { unplug(link) }
+    }
+
+    /// Returns a link to Bluetooth.
+    private func unplug(_ link: Link) {
+        guard link.usb != nil else { return }
+        link.usb = nil
+        teardown(link, state: .connecting)
+        publish()
+        connect(link)
     }
 
     // MARK: Lease, lifecycle and pairing
@@ -781,6 +974,7 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             onDiagnostic?("Mac relay paired with \(macName)")
             // The Mac publishes the link service before it accepts, so setup continues on this connection.
             beginSetup(link)
+            for cable in cables { offer(link, on: cable) }
             updateScan()
             publish()
         } catch {
@@ -807,7 +1001,8 @@ final class PhoneRelay: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     private func publish() {
         let macs = links.values.sorted { $0.record.created < $1.record.created }.map {
-            MacLinks.Mac(id: $0.record.id, name: $0.record.name, state: $0.phase == .live ? .connected : $0.state, lastConnected: $0.lastConnected)
+            MacLinks.Mac(id: $0.record.id, name: $0.record.name, state: $0.phase == .live ? .connected : $0.state, lastConnected: $0.lastConnected,
+                         cable: $0.usb != nil)
         }
         MacLinks.shared.publish(macs: macs, pairing: pairingState)
         let summary: String

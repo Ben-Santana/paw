@@ -156,6 +156,19 @@ extension Array where Element == GestureKind {
     var steps: [ComboStep] { map { ComboStep($0) } }
 }
 
+extension Set where Element == GestureKind {
+    /// A double tap arrives after the tap that began it and a hold ends with a release, so
+    /// whoever takes one takes the other.
+    var withPartners: Set<GestureKind> {
+        var gestures = self
+        if contains(.doubleTapIndex) { gestures.insert(.tapIndex) }
+        if contains(.doubleTapMiddle) { gestures.insert(.tapMiddle) }
+        if contains(.holdIndex) { gestures.insert(.releaseIndex) }
+        if contains(.holdMiddle) { gestures.insert(.releaseMiddle) }
+        return gestures
+    }
+}
+
 enum ComboRules {
     /// The Mac app's timing choices, in milliseconds.
     static let times = [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000]
@@ -430,6 +443,9 @@ struct MappingProfile: Codable, Identifiable, Hashable, Sendable {
 struct MappingLibrary: Codable, Sendable {
     var profiles: [MappingProfile]
     var activeID: String
+    /// The combo that hands the band between a running app's controls and these mappings
+    /// (`SwitchControls`). It belongs to no profile, so it is the same in all of them.
+    var switchControls: SwitchCombo? = nil
 
     static let initial: MappingLibrary = {
         let main = MappingProfile(id: "main", name: "Main", icon: "home", mappings: []).normalized()
@@ -445,4 +461,10 @@ struct MappingLibrary: Codable, Sendable {
         if !copy.profiles.contains(where: { $0.id == activeID }) { copy.activeID = copy.profiles[0].id }
         return copy
     }
+}
+
+/// The steps of the switch-controls combo and the time allowed between them. See `SwitchControls`.
+struct SwitchCombo: Codable, Hashable, Sendable {
+    var steps: [ComboStep]
+    var intervalMs = ComboRules.defaultTime
 }

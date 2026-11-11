@@ -46,7 +46,14 @@ final class WorkoutStore: ObservableObject {
     /// Told which gestures a running workout holds (none when nothing runs), so mappings
     /// that use them turn off for as long as it does.
     var onReserve: ((Set<GestureKind>) -> Void)? { didSet { onReserve?(reservedNow) } }
-    private var reservedNow: Set<GestureKind> { run == nil ? [] : controls.reserved }
+    private var reservedNow: Set<GestureKind> {
+        run == nil || yielded ? [] : controls.reserved.union(SwitchControls.reserved(switchMapping))
+    }
+    /// The switch-controls combo, while this is the app the band switches to and from and
+    /// its controls are selected. Set by `ControlSwitch`.
+    var switchMapping: Mapping? { didSet { if switchMapping != oldValue { controlsChanged() } } }
+    /// True while the regular mappings have the band though a workout runs. Reps still count.
+    var yielded = false { didSet { if yielded != oldValue, !previewOnly { onReserve?(reservedNow) } } }
     /// Decides which command a band gesture completes, combos included.
     private let decider = TriggerDecider()
     /// Told whether a workout needs the band's motion streams. Set by the session.
@@ -63,7 +70,9 @@ final class WorkoutStore: ObservableObject {
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
         decider.onFire = { [weak self] id in
-            guard let self, self.run != nil, let command = self.controls.command(forMapping: id) else { return }
+            guard let self, self.run != nil else { return }
+            if id == SwitchControls.mappingID { ControlSwitch.shared.toggle(); return }
+            guard let command = self.controls.command(forMapping: id) else { return }
             self.perform(command)
         }
         decider.configure(controls.mappings)
@@ -71,7 +80,7 @@ final class WorkoutStore: ObservableObject {
 
     private func controlsChanged() {
         guard !previewOnly else { return }
-        decider.configure(controls.mappings)
+        decider.configure(SwitchControls.adding(switchMapping, to: controls.mappings))
         onReserve?(reservedNow)
     }
 

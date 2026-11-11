@@ -24,10 +24,12 @@ final class MacLinks: ObservableObject {
         var name: String
         var state: State
         var lastConnected: Date?
+        /// The link is running over the cable instead of Bluetooth.
+        var cable = false
 
         var statusText: String {
             switch state {
-            case .connected: return "Connected"
+            case .connected: return cable ? "Connected by cable" : "Connected"
             case .connecting: return "Looking for \(name)…"
             case .sleeping: return "\(name) is asleep"
             case .notNearby: return "\(name) isn't nearby"

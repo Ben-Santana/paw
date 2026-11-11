@@ -55,6 +55,15 @@ struct LiveAlert: Hashable, Sendable {
 struct ScoreActivityState: Codable, Hashable {
     var names: [String]
     var scores: [Int]
+    /// The points as the game type reads them (tennis's 15, 30, 40, Ad); nil shows `scores`.
+    var labels: [String]? = nil
+    /// Games and sets won, shortened ("S1 G3"), and "Won" for the match's winner; empty
+    /// for game types that don't count them.
+    var standings: [String]? = nil
+    /// Points each player still needs to win the game, near its end; 0 before then.
+    var toGo: [Int]? = nil
+    /// What a player's next point would win ("Game point"); empty unless it would.
+    var pointNames: [String]? = nil
     /// Each player's index into `ScoreTint`.
     var tints: [Int] = []
     /// The player the band changes, when there are more than two.

@@ -482,6 +482,10 @@ struct TriggerSheet: View {
     var feed: MappingStore? = nil
     /// A sentence about a draft: who else uses it, what it will do.
     var note: ([ComboStep]) -> String? = { _ in nil }
+    /// Why a draft can't be saved though its steps are allowed: something else is set off by them.
+    var blocked: ([ComboStep]) -> String? = { _ in nil }
+    /// Whether the draft may not be the switch-controls combo. Only that combo's own sheet turns this off.
+    var checksSwitch = true
     /// The steps and the time between them. No steps means none.
     let save: ([ComboStep], Int) -> Void
 
@@ -492,11 +496,18 @@ struct TriggerSheet: View {
 
     init(title: String, caption: String? = nil, rules: TriggerRules, steps: [ComboStep], intervalMs: Int = ComboRules.defaultTime,
          taken: Set<GestureKind> = [], feed: MappingStore? = nil, note: @escaping ([ComboStep]) -> String? = { _ in nil },
+         blocked: @escaping ([ComboStep]) -> String? = { _ in nil }, checksSwitch: Bool = true,
          save: @escaping ([ComboStep], Int) -> Void) {
         self.title = title; self.caption = caption; self.rules = rules; self.taken = taken; self.feed = feed; self.note = note; self.save = save
+        self.blocked = blocked; self.checksSwitch = checksSwitch
         initial = steps
         _steps = State(initialValue: steps)
         _interval = State(initialValue: ComboRules.times.contains(intervalMs) ? intervalMs : ComboRules.defaultTime)
+    }
+
+    /// What stops these steps being saved: the caller's reason, or the switch-controls combo using them.
+    private var clash: String? {
+        blocked(steps) ?? (checksSwitch ? ControlSwitch.shared.clash(steps) : nil)
     }
 
     var body: some View {
@@ -506,7 +517,7 @@ struct TriggerSheet: View {
                     if let caption {
                         Text(caption).font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
                     }
-                    TriggerComposer(steps: $steps, interval: $interval, rules: rules, note: note(steps), taken: taken, feed: feed)
+                    TriggerComposer(steps: $steps, interval: $interval, rules: rules, note: clash ?? note(steps), taken: taken, feed: feed)
                     if rules.allowsNone, !initial.isEmpty {
                         Button("Set to none") { save([], interval); dismiss() }.buttonStyle(.quiet)
                     }
@@ -519,7 +530,7 @@ struct TriggerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save(steps, interval); dismiss() }.font(.label).disabled(!rules.isValid(steps))
+                    Button("Save") { save(steps, interval); dismiss() }.font(.label).disabled(!rules.isValid(steps) || clash != nil)
                 }
             }
         }

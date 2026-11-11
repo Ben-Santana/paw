@@ -48,12 +48,7 @@ extension Dictionary where Value == CommandTrigger {
     /// meanwhile. A double tap arrives after the tap that began it and a hold ends with a
     /// release, so those are taken with them.
     var reserved: Set<GestureKind> {
-        var gestures = Set(values.filter(\.isValid).flatMap { $0.steps.map(\.gesture) })
-        if gestures.contains(.doubleTapIndex) { gestures.insert(.tapIndex) }
-        if gestures.contains(.doubleTapMiddle) { gestures.insert(.tapMiddle) }
-        if gestures.contains(.holdIndex) { gestures.insert(.releaseIndex) }
-        if gestures.contains(.holdMiddle) { gestures.insert(.releaseMiddle) }
-        return gestures
+        Set(values.filter(\.isValid).flatMap { $0.steps.map(\.gesture) }).withPartners
     }
 }
 

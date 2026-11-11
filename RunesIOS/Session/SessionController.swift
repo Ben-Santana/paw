@@ -22,6 +22,7 @@ final class SessionController: ObservableObject {
     private let core: SessionCore
     private let live = LiveActivityController()
     private var profileWatch: AnyCancellable?
+    private var switchWatch: AnyCancellable?
     private var authTask: Task<Void, Never>?
     private var pairTasks: [UUID: Task<Void, Never>] = [:]
     private var loginContinuation: CheckedContinuation<URL, Error>?
@@ -139,6 +140,10 @@ final class SessionController: ObservableObject {
         ScoreStore.shared.onLive = { ScoreAudio.shared.setLive($0) }
         profileWatch = MappingStore.shared.$library.map(\.active.icon).removeDuplicates()
             .sink { [weak self] icon in self?.live.setProfile(icon: icon) }
+        // The combo that switches between a running app's controls and the regular mappings.
+        ControlSwitch.shared.onChange = { [weak self] announce in self?.controlsChanged(announce: announce) }
+        switchWatch = MappingStore.shared.$library.map(\.switchControls).removeDuplicates()
+            .sink { ControlSwitch.shared.setCombo($0) }
         core.onRelayEvent = { [weak relay] in relay?.forward($0) }
         MappingStore.shared.onBindings = { [weak relay] in relay?.setBindings($0) }
         WakeProbe.shared.start { [weak session] message in
@@ -155,6 +160,31 @@ final class SessionController: ObservableObject {
     private func reserve(_ gestures: Set<GestureKind>, for app: RunesApp) {
         reservations[app] = gestures
         MappingStore.shared.reserve(reservations.values.reduce(into: Set()) { $0.formUnion($1) })
+        // An app that started or ended changes who the switch-controls combo belongs to.
+        ControlSwitch.shared.refresh()
+    }
+
+    /// Tells the Live Activity who has the band: with the regular controls it shows the band
+    /// status instead of the app. When a person switched, two
+    /// notes say which way: rising into the app's controls, falling back to the regular ones.
+    /// A locked phone may not be able to start a sound, so there the Live Activity alerts too.
+    private func controlsChanged(announce: Bool) {
+        let controls = ControlSwitch.shared
+        var alert: LiveAlert?
+        if announce, let app = controls.app {
+            let notes: [Double] = controls.regular ? [587, 392] : [392, 587]
+            Task { @MainActor in
+                for (index, pitch) in notes.enumerated() {
+                    if index > 0 { try? await Task.sleep(for: .milliseconds(150)) }
+                    ScoreAudio.shared.preview(.pluck, pitch: pitch, volume: 0.8)
+                }
+            }
+            if !foreground {
+                alert = LiveAlert(title: controls.regular ? "Regular controls" : "\(app.title) controls",
+                                  body: controls.comboName.map { "\($0) to switch back" } ?? "")
+            }
+        }
+        live.show(regular: controls.regular, alert: alert)
     }
 
     private func pushMotionDemand() {
