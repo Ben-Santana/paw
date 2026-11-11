@@ -5,52 +5,53 @@ import Security
 import UIKit
 
 /// Spotify Web API over OAuth (authorization code with PKCE, no client secret).
-/// The person registers their own Spotify app and pastes its client ID; tokens live in the Keychain.
+/// Tokens are kept separately for each configured Spotify app.
 /// Playback control needs Spotify Premium and an open Spotify app on some device.
 @MainActor
 final class SpotifyClient: ObservableObject {
     static let shared = SpotifyClient()
 
-    static let redirectURI = "runes-spotify://callback"
-    private static let scopes = "user-read-playback-state user-modify-playback-state user-library-modify"
-    /// The Runes Spotify app. A PKCE client ID is public, not a secret.
-    static let clientID = "d845d22c3a5e4a4caf16a2456f23b0c8"
-
     @Published private(set) var isConnected: Bool
     @Published private(set) var accountName: String?
+    @Published private(set) var accessIssue: String?
+    @Published private(set) var connectionCheckPassed = false
 
     private struct Tokens: Codable { var access: String; var refresh: String; var expires: Date; var name: String? }
     private var tokens: Tokens? { didSet { isConnected = tokens != nil; accountName = tokens?.name } }
-    private let keychain = SpotifyKeychain()
+    private let configuration: SpotifyConfiguration?
+    private let keychain: SpotifyKeychain?
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCache = nil
         return URLSession(configuration: configuration)
     }()
     private var authSession: ASWebAuthenticationSession?
+    private var signInGeneration = UUID()
     private let presenter = Presenter()
 
     private init() {
-        let saved = keychain.load().flatMap { try? JSONDecoder().decode(Tokens.self, from: $0) }
+        let configuration = try? SpotifyConfiguration(override: Bundle.main.object(forInfoDictionaryKey: "SpotifyClientID"))
+        self.configuration = configuration
+        let keychain = configuration.map { SpotifyKeychain(account: $0.keychainAccount) }
+        self.keychain = keychain
+        let saved = keychain?.load().flatMap { try? JSONDecoder().decode(Tokens.self, from: $0) }
         tokens = saved; isConnected = saved != nil; accountName = saved?.name
+        if configuration == nil { accessIssue = SpotifyConfiguration.Failure.invalidClientID.localizedDescription }
     }
 
     // MARK: Sign in
 
     func connect() async throws {
-        let id = Self.clientID
+        guard let configuration else { throw SpotifyConfiguration.Failure.invalidClientID }
+        signInGeneration = UUID()
+        let generation = signInGeneration
         let verifier = Self.randomURLSafe(64)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
         let state = Self.randomURLSafe(16)
-        var components = URLComponents(string: "https://accounts.spotify.com/authorize")!
-        components.queryItems = [
-            .init(name: "client_id", value: id), .init(name: "response_type", value: "code"),
-            .init(name: "redirect_uri", value: Self.redirectURI), .init(name: "scope", value: Self.scopes),
-            .init(name: "code_challenge_method", value: "S256"), .init(name: "code_challenge", value: challenge),
-            .init(name: "state", value: state),
-        ]
+        SpotifyDiagnosticLog.record(authorization: .init(.started))
         let callback: URL = try await withCheckedThrowingContinuation { continuation in
-            let auth = ASWebAuthenticationSession(url: components.url!, callback: .customScheme("runes-spotify")) { url, error in
+            let auth = ASWebAuthenticationSession(url: configuration.authorizationURL(challenge: challenge, state: state),
+                                                callback: .customScheme(SpotifyConfiguration.callbackScheme)) { url, error in
                 if let url { continuation.resume(returning: url) }
                 else { continuation.resume(throwing: error ?? SpotifyError.message("Sign-in was cancelled.")) }
             }
@@ -59,26 +60,62 @@ final class SpotifyClient: ObservableObject {
             authSession = auth
             auth.start()
         }
+        guard generation == signInGeneration else { throw CancellationError() }
         authSession = nil
-        let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        guard items.first(where: { $0.name == "state" })?.value == state else { throw SpotifyError.message("Sign-in response didn’t match. Try again.") }
-        guard let code = items.first(where: { $0.name == "code" })?.value else {
-            throw SpotifyError.message("Spotify said: \(items.first { $0.name == "error" }?.value ?? "no code returned").")
+        let code: String
+        do {
+            code = try configuration.authorizationCode(from: callback, state: state)
+        } catch let error as SpotifyConfiguration.Failure {
+            switch error {
+            case .invalidCallback(let reason): SpotifyDiagnosticLog.record(authorization: .init(rejection: reason))
+            case .authorizationDenied: SpotifyDiagnosticLog.record(authorization: .init(.authorizationDenied))
+            case .invalidClientID: break
+            }
+            throw error
         }
-        var fresh = try await tokenRequest(["grant_type": "authorization_code", "code": code, "redirect_uri": Self.redirectURI,
-                                            "client_id": id, "code_verifier": verifier], previousRefresh: nil)
-        if let (data, _) = try? await send("GET", "https://api.spotify.com/v1/me", token: fresh.access),
-           let me = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            fresh.name = (me["display_name"] as? String) ?? (me["id"] as? String)
-        }
+        SpotifyDiagnosticLog.record(authorization: .init(.callbackAccepted))
+        SpotifyDiagnosticLog.record(authorization: .init(.tokenExchangeStarted))
+        let fresh = try await tokenRequest(configuration.tokenFields(code: code, verifier: verifier), previousRefresh: nil)
+        guard generation == signInGeneration else { throw CancellationError() }
+        // Keep the authorized tokens even if the app's user allowlist is not ready yet.
+        // OAuth success alone must not be presented as verified Web API access.
         store(fresh)
+        await checkConnection()
     }
 
-    func disconnect() { keychain.delete(); tokens = nil }
+    func disconnect() {
+        signInGeneration = UUID()
+        authSession?.cancel(); authSession = nil
+        keychain?.delete(); tokens = nil; accessIssue = nil; connectionCheckPassed = false
+    }
+
+    /// A read-only API check, usable with an existing saved sign-in after its app access changes.
+    func checkConnection() async {
+        guard configuration != nil else { accessIssue = SpotifyConfiguration.Failure.invalidClientID.localizedDescription; return }
+        guard isConnected else { return }
+        let generation = signInGeneration
+        connectionCheckPassed = false
+        do {
+            let token = try await accessToken()
+            guard generation == signInGeneration else { return }
+            let result = try await send("GET", "https://api.spotify.com/v1/me", token: token)
+            guard generation == signInGeneration else { return }
+            try check(result, endpoint: "/v1/me")
+            if var saved = tokens,
+               let me = try JSONSerialization.jsonObject(with: result.0) as? [String: Any] {
+                saved.name = (me["display_name"] as? String) ?? (me["id"] as? String)
+                store(saved)
+            }
+            connectionCheckPassed = true; accessIssue = nil
+        } catch {
+            guard generation == signInGeneration else { return }
+            accessIssue = error.localizedDescription
+        }
+    }
 
     private func store(_ new: Tokens) {
         tokens = new
-        if let data = try? JSONEncoder().encode(new) { keychain.save(data) }
+        if let data = try? JSONEncoder().encode(new) { keychain?.save(data) }
     }
 
     private func tokenRequest(_ fields: [String: String], previousRefresh: String?) async throws -> Tokens {
@@ -87,8 +124,16 @@ final class SpotifyClient: ObservableObject {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var form = URLComponents(); form.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = Data((form.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
-        let (data, response) = try await session.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch {
+            SpotifyDiagnosticLog.record(authorization: .init(transportFailure: .init(error)))
+            throw error
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        SpotifyDiagnosticLog.record(method: "POST", endpoint: "/api/token", status: status,
+                                    failure: SpotifyHTTPFailure(data: data, status: status, endpoint: "/api/token"))
+        guard status == 200,
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = json["access_token"] as? String else {
             throw SpotifyError.message("Spotify sign-in failed. Reconnect in the action’s settings.")
@@ -99,14 +144,18 @@ final class SpotifyClient: ObservableObject {
     }
 
     private func accessToken() async throws -> String {
+        guard let configuration else { throw SpotifyConfiguration.Failure.invalidClientID }
         guard let current = tokens else { throw SpotifyError.message("Connect Spotify in the action’s settings.") }
         if current.expires > Date() { return current.access }
+        let generation = signInGeneration
         do {
-            let fresh = try await tokenRequest(["grant_type": "refresh_token", "refresh_token": current.refresh, "client_id": Self.clientID],
+            let fresh = try await tokenRequest(configuration.refreshFields(token: current.refresh),
                                                previousRefresh: current.refresh)
+            guard generation == signInGeneration else { throw CancellationError() }
             store(fresh)
             return fresh.access
         } catch {
+            guard generation == signInGeneration else { throw CancellationError() }
             throw SpotifyError.message("Spotify sign-in expired. Reconnect in the action’s settings.")
         }
     }
@@ -116,6 +165,17 @@ final class SpotifyClient: ObservableObject {
     private static let player = "https://api.spotify.com/v1/me/player"
 
     func perform(_ command: SpotifyCommand) async throws {
+        let generation = signInGeneration
+        do {
+            try await performCommand(command)
+            if generation == signInGeneration { accessIssue = nil }
+        } catch {
+            if generation == signInGeneration { accessIssue = error.localizedDescription }
+            throw error
+        }
+    }
+
+    private func performCommand(_ command: SpotifyCommand) async throws {
         let token = try await accessToken()
         switch command {
         case .play: try await play(token)
@@ -126,7 +186,10 @@ final class SpotifyClient: ObservableObject {
             let state = try await playback(token)
             if state?["is_playing"] as? Bool == true { try await call("PUT", "/pause", token) } else { try await play(token) }
         case .volumeUp, .volumeDown:
-            guard let device = try await playback(token)?["device"] as? [String: Any], let volume = device["volume_percent"] as? Int else {
+            guard let device = try await playback(token)?["device"] as? [String: Any],
+                  device["supports_volume"] as? Bool != false,
+                  device["is_restricted"] as? Bool != true,
+                  let volume = device["volume_percent"] as? Int else {
                 throw SpotifyError.message("This Spotify device doesn’t allow volume control.")
             }
             let next = max(0, min(100, volume + (command == .volumeUp ? 10 : -10)))
@@ -148,10 +211,13 @@ final class SpotifyClient: ObservableObject {
                 throw SpotifyError.message("Nothing is playing to like.")
             }
             let encoded = uri.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? uri
-            let (_, status) = try await send("PUT", "https://api.spotify.com/v1/me/library?uris=\(encoded)", token: token)
-            if !(200..<300).contains(status) {
+            let result = try await send("PUT", "https://api.spotify.com/v1/me/library?uris=\(encoded)", token: token)
+            if result.1 == 404 || result.1 == 405 {
                 // Older endpoint, for apps that still use it.
-                try check(try await send("PUT", "https://api.spotify.com/v1/me/tracks?ids=\(id)", token: token))
+                try check(try await send("PUT", "https://api.spotify.com/v1/me/tracks?ids=\(id)", token: token), endpoint: "/v1/me/tracks")
+            } else {
+                // Authentication/access failures must keep their original reason, not be masked by a fallback.
+                try check(result, endpoint: "/v1/me/library")
             }
         }
     }
@@ -159,35 +225,31 @@ final class SpotifyClient: ObservableObject {
     /// Resumes; with no active device, wakes the first available one.
     private func play(_ token: String) async throws {
         do { try await call("PUT", "/play", token) } catch SpotifyError.noDevice {
-            let (data, _) = try await send("GET", Self.player + "/devices", token: token)
+            let (data, status) = try await send("GET", Self.player + "/devices", token: token)
+            try check((data, status), endpoint: "/v1/me/player/devices")
             let devices = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["devices"] as? [[String: Any]] ?? []
             guard let id = devices.first?["id"] as? String else { throw SpotifyError.noDevice }
             let body = try JSONSerialization.data(withJSONObject: ["device_ids": [id], "play": true])
-            try check(try await send("PUT", Self.player, token: token, body: body))
+            try check(try await send("PUT", Self.player, token: token, body: body), endpoint: "/v1/me/player")
         }
     }
 
     private func playback(_ token: String) async throws -> [String: Any]? {
         let (data, status) = try await send("GET", Self.player, token: token)
         if status == 204 { return nil }
-        try check((data, status))
+        try check((data, status), endpoint: "/v1/me/player")
         return try JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     private func call(_ method: String, _ path: String, _ token: String) async throws {
-        try check(try await send(method, Self.player + path, token: token))
+        try check(try await send(method, Self.player + path, token: token), endpoint: "/v1/me/player" + path)
     }
 
-    private func check(_ result: (Data, Int)) throws {
+    private func check(_ result: (Data, Int), endpoint: String) throws {
         let (data, status) = result
-        if (200..<300).contains(status) { return }
-        let error = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any]
-        let reason = error?["reason"] as? String
-        if status == 404 || reason == "NO_ACTIVE_DEVICE" { throw SpotifyError.noDevice }
-        if reason == "PREMIUM_REQUIRED" { throw SpotifyError.message("Spotify playback control needs Premium.") }
-        if status == 401 { throw SpotifyError.message("Spotify sign-in expired. Reconnect in the action’s settings.") }
-        if status == 429 { throw SpotifyError.message("Spotify is rate limiting. Try again shortly.") }
-        throw SpotifyError.message(error?["message"] as? String ?? "Spotify returned \(status).")
+        guard let failure = SpotifyHTTPFailure(data: data, status: status, endpoint: endpoint) else { return }
+        if failure.category == .noDevice { throw SpotifyError.noDevice }
+        throw failure
     }
 
     private func send(_ method: String, _ url: String, token: String, body: Data? = nil) async throws -> (Data, Int) {
@@ -197,7 +259,10 @@ final class SpotifyClient: ObservableObject {
         if let body { request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         else if method != "GET" { request.setValue("0", forHTTPHeaderField: "Content-Length") }
         let (data, response) = try await session.data(for: request)
-        return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        SpotifyDiagnosticLog.record(method: method, endpoint: url, status: status,
+                                    failure: SpotifyHTTPFailure(data: data, status: status, endpoint: url))
+        return (data, status)
     }
 
     private static func randomURLSafe(_ bytes: Int) -> String {
@@ -228,9 +293,10 @@ enum SpotifyError: Error, LocalizedError {
 
 /// Spotify tokens, readable after first unlock so actions work on a locked phone.
 private struct SpotifyKeychain {
-    private let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                        kSecAttrService as String: "com.runes.ios.spotify.v1",
-                                        kSecAttrAccount as String: "tokens"]
+    let account: String
+    private var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword,
+                                      kSecAttrService as String: "com.runes.ios.spotify.v1",
+                                      kSecAttrAccount as String: account] }
     func load() -> Data? {
         var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
