@@ -14,6 +14,10 @@ Use the same band and record phone model, iOS version, band firmware if availabl
 - Perform the band's available index/middle taps, presses, holds, releases, and directional gestures.
 - Inspect packet details: finger, raw/derived action, synthetic flag, sequence, device timestamp, host receipt, and source clock.
 - Verify derived-only packets use their derived label and unknown enum codes remain visible. Counts are packets, not a promise of one packet per physical gesture.
+- While connected, choose **Settings → Wrist → Left wrist**, wear the band on the left, and require a confirmed Left readback before testing taps, holds and directional gestures. Repeat with Right wrist.
+- Reconnect and check the reported wrist setting. An interrupted write/readback must show an unconfirmed setting, remain retryable, and never be reported as a successful change. Test reboot persistence separately; a reconnect alone does not establish it.
+- On the Wrist page, text and buttons appear together while the opening ring lowers without reversing. Check both directions: beads follow a continuous inner curve, wait for matching readback before settling with short band cues, then keep orbiting slowly. An early reply must not cut the flow short. A rejected or mismatched setting must not play success feedback. Leave the page or background the app mid-change; returning must not replay cues. Reduce Motion keeps the artwork still.
+- With Reduce Motion enabled, confirm the wrist page has no orbit or lift and uses only the confirmed settle cue. Check large text and VoiceOver labels for Left, Right, Checking and Confirmed.
 
 ## 3. Standalone background session
 

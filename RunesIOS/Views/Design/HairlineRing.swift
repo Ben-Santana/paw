@@ -110,14 +110,13 @@ struct HairlineRing: View {
 
     // MARK: Geometry
 
-    private static let radius = 49.0
+    private static let radius = RingGeometry.radius
     /// The pod nearest the viewer.
     private static let front = 1
-    private static let elevation = 0.5
+    private static let elevation = RingGeometry.elevation
 
     private static func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
-        let s = 1 / 2.0.squareRoot()
-        return CGPoint(x: (x - y) * s, y: (x + y) * s * sin(elevation) - z * cos(elevation))
+        RingGeometry.project(x, y, z)
     }
 
     private static func polygon(_ points: [CGPoint], _ transform: CGAffineTransform, closed: Bool = true) -> Path {
@@ -319,40 +318,21 @@ struct HairlineRing: View {
             let energised = f.flash > 0 || emphasised || lift > 4 || glow > 0.2
             let stroke: Color = energised ? .ink : strokeColor
             let body = ball(pod.x, pod.y, pod.z + lift, transform)
-            canvas.fill(Path(ellipseIn: body), with: .color(.paper))
-            canvas.stroke(Path(ellipseIn: body), with: .color(stroke), lineWidth: line)
-            // A dot that appears and fills with ink as the ball charges (hold, double tap).
-            let fill = max(glow, f.flash * 0.7)
-            let dot = body.insetBy(dx: body.width * 0.34, dy: body.height * 0.34).offsetBy(dx: 0, dy: -body.height * 0.06)
-            if fill > 0.01 { canvas.fill(Path(ellipseIn: dot), with: .color(.ink.opacity(fill))) }
+            RingGeometry.drawBall(in: &canvas, body: body, stroke: stroke, lineWidth: line,
+                                  charge: max(glow, f.flash * 0.7))
         }
     }
 
-    private static let ballRadius = 12.0
-
-    /// A ball's outline on screen. A sphere projects to a circle under this camera.
     private func ball(_ x: Double, _ y: Double, _ z: Double, _ transform: CGAffineTransform) -> CGRect {
-        let center = Self.project(x, y, z + Self.ballRadius).applying(transform)
-        let r = Self.ballRadius * transform.a
-        return CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+        RingGeometry.ball(x, y, z, transform)
     }
 
-    /// The ball's shadow on the wrist plane, shrinking as it lifts.
     private static func shadow(_ x: Double, _ y: Double, lift: Double, _ transform: CGAffineTransform) -> CGRect {
-        let center = project(x, y, 6).applying(transform)
-        let r = ballRadius * transform.a * max(0.45, 0.8 - lift / 60)
-        return CGRect(x: center.x - r, y: center.y - r * sin(elevation), width: r * 2, height: r * 2 * sin(elevation))
+        RingGeometry.shadow(x, y, lift: lift, transform)
     }
 
-    private struct PlacedPod { let index: Int; let x: Double; let y: Double; let z: Double }
-
-    /// Pods in painter's order (back to front) after rotating the ring.
-    private func pods(rotation: Double, radius: Double) -> [PlacedPod] {
-        (0..<8).map { i in
-            let a = Double(i) * .pi / 4 + rotation
-            return PlacedPod(index: i, x: cos(a) * radius, y: sin(a) * radius, z: 8 + cos(a) * 3)
-        }
-        .sorted { ($0.x + $0.y) < ($1.x + $1.y) }
+    private func pods(rotation: Double, radius: Double) -> [RingGeometry.Pod] {
+        RingGeometry.pods(rotation: rotation, radius: radius)
     }
 
     private var strokeColor: Color {

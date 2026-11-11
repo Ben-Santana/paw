@@ -17,7 +17,11 @@ struct SessionSnapshot: Sendable {
     var identityAccount: UUID?
     var identityFingerprint: String?
     var battery: Int?
-    var hand: Handedness?
+    var handSetting = HandSetting()
+    var hand: Handedness? {
+        get { handSetting.confirmed }
+        set { handSetting.confirmed = newValue }
+    }
     var bluetoothReady = false
     /// The latest physical gesture, one per tap, double tap, hold or swipe.
     var lastGesture: BandGesture?
@@ -212,7 +216,85 @@ struct SequenceTracker: Sendable {
     }
 }
 
-enum Handedness: String, Sendable { case left, right }
+enum Handedness: String, Sendable {
+    case left, right
+    var configuration: Data { PB.field(10, self == .left ? 1 : 0) }
+    static func read(_ payload: Data) -> Self? {
+        guard let config = try? Fields(Fields(payload).bytes(6)), let value = try? config.integer(10), value <= 1 else { return nil }
+        return value == 1 ? .left : .right
+    }
+}
+
+struct HandSetting: Equatable, Sendable {
+    enum Request: Equatable, Sendable { case read, write(Handedness), verify(Handedness) }
+    var confirmed: Handedness?
+    private(set) var pending: Request?
+    private(set) var error: String?
+    private(set) var changeID: UUID?
+    var busy: Bool { pending != nil }
+    var confirmedChangeID: UUID? { !busy && confirmed != nil && error == nil ? changeID : nil }
+    init(confirmed: Handedness? = nil) { self.confirmed = confirmed }
+
+    mutating func read() -> Bool {
+        guard !busy else { return false }
+        pending = .read; confirmed = nil; error = nil; changeID = nil; return true
+    }
+    mutating func change(to hand: Handedness) -> Bool {
+        guard !busy else { return false }
+        pending = .write(hand); confirmed = nil; error = nil; changeID = UUID(); return true
+    }
+    mutating func wrote() -> Bool {
+        guard case .write(let hand) = pending else { return false }
+        pending = .verify(hand); return true
+    }
+    mutating func received(_ hand: Handedness?) -> Bool {
+        switch pending { case .read, .verify: break; default: return false }
+        guard let hand else { fail("The band did not report a valid wrist setting."); return false }
+        if case .verify(let requested) = pending, requested != hand {
+            error = "The band kept its \(hand.rawValue) wrist setting. Try again."
+        } else { error = nil }
+        confirmed = hand; pending = nil; return true
+    }
+    mutating func fail(_ message: String) { confirmed = nil; pending = nil; error = message; changeID = nil }
+    mutating func cancel() {
+        if busy { confirmed = nil; error = "The wrist setting was not confirmed. Reconnect to check it." }
+        pending = nil; changeID = nil
+    }
+}
+
+enum WristFeedbackPhase: String, CaseIterable, Sendable {
+    case wrap, settle
+    var duration: UInt64 { self == .wrap ? 70 : 100 }
+    var amplitude: UInt64 { self == .wrap ? 200 : 230 }
+    var payload: Data { PB.field(1, PB.field(1, duration) + PB.field(3, amplitude)) }
+}
+
+enum WristFeedbackResult: String, Sendable {
+    case accepted, rejected, unconfirmed
+    init(_ payload: Data) {
+        guard let fields = try? Fields(payload), let status = try? fields.integer(2) else { self = .unconfirmed; return }
+        guard status == 1 else { self = .rejected; return }
+        guard let response = try? Fields(fields.bytes(18)), (try? response.bytes(2)) != nil,
+              let result = try? response.integer(1) else { self = .unconfirmed; return }
+        self = result == 0 ? .accepted : .rejected
+    }
+}
+
+struct WristFeedbackGate: Sendable {
+    private var change: UUID?
+    private var phases: Set<WristFeedbackPhase> = []
+    private var lastSent = -TimeInterval.infinity
+
+    mutating func begin(_ change: UUID) { self.change = change; phases = [] }
+    mutating func take(_ phase: WristFeedbackPhase, change: UUID, now: TimeInterval) -> Bool {
+        guard self.change == change, now - lastSent >= 0.25 else { return false }
+        guard phases.insert(phase).inserted else { return false }
+        lastSent = now; return true
+    }
+    mutating func cancel(_ change: UUID? = nil) {
+        if change == nil || self.change == change { self.change = nil }
+    }
+}
 
 /// Everything the interface may say about a problem: one plain sentence and one action.
 /// Protocol detail never appears here; it goes to the journal.
