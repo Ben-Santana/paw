@@ -3,10 +3,9 @@ import SwiftUI
 struct SettingsValues {
     var bandSetUp = true
     var battery: Int?
-    var hand: Handedness?
+    var handSetting = HandSetting()
+    var band: UUID?
     var canChangeHand = false
-    var handBusy = false
-    var handError: String?
     var macs: [MacLinks.Mac] = []
     var macPairing: MacLinks.Pairing = .idle
     var version = "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "–") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "–"))"
@@ -15,6 +14,8 @@ struct SettingsValues {
 struct SettingsActions {
     var forget: () -> Void = {}
     var setHand: (Handedness) -> Void = { _ in }
+    var wristFeedback: (WristFeedbackPhase, Handedness, UUID) -> Void = { _, _, _ in }
+    var cancelWristFeedback: (UUID) -> Void = { _ in }
     var batteryAlertsChanged: (Bool) -> Void = { _ in }
     /// Takes the scanned code; returns an error message if it isn't a Mac code.
     var pairMac: (String) -> String? = { _ in nil }
@@ -41,23 +42,20 @@ struct SettingsView<Advanced: View>: View {
                     PanelGroup("Band") {
                         ValueRow("Battery") { Text(values.battery.map { "\($0)%" } ?? "—").monospacedDigit() }
                         Rule()
-                        ValueRow("Wrist") {
-                            Menu {
-                                Button("Left wrist") { actions.setHand(.left) }
-                                Button("Right wrist") { actions.setHand(.right) }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(values.hand.map { $0 == .left ? "Left" : "Right" } ?? (values.handError == nil ? "Choose" : "Unconfirmed"))
-                                    Image(systemName: "chevron.up.chevron.down").font(.caption)
-                                }
+                        NavigationLink {
+                            WristView(setting: values.handSetting, connected: values.canChangeHand,
+                                      band: values.band, choose: actions.setHand,
+                                      feedback: actions.wristFeedback, cancelFeedback: actions.cancelWristFeedback)
+                        } label: {
+                            HStack {
+                                Text("Wrist").font(.bodyText)
+                                Spacer()
+                                Text(wristLabel).font(.bodyText).foregroundStyle(Color.muted)
+                                Chevron()
                             }
-                            .disabled(!values.canChangeHand || values.handBusy)
-                            .accessibilityLabel("Band wrist")
+                            .panelRow()
                         }
-                        if values.handBusy || values.handError != nil || !values.canChangeHand {
-                            Text(values.handBusy ? "Checking wrist setting…" : values.handError ?? "Connect your band to change its wrist setting.")
-                                .font(.caption).foregroundStyle(Color.muted).padding(.horizontal, Metric.inset).padding(.bottom, 10)
-                        }
+                        .buttonStyle(.plain)
                         Rule()
                         ActionRow("Forget band") { confirmForget = true }.disabled(!values.bandSetUp)
                     }
@@ -127,6 +125,12 @@ struct SettingsView<Advanced: View>: View {
         .tint(Color.ink)
     }
 
+    private var wristLabel: String {
+        if values.handSetting.busy { return "Checking" }
+        if let hand = values.handSetting.confirmed { return hand == .left ? "Left" : "Right" }
+        return values.handSetting.error == nil ? "Choose" : "Unconfirmed"
+    }
+
     private var pairingText: String? {
         if let scanProblem { return scanProblem }
         switch values.macPairing {
@@ -155,14 +159,16 @@ struct SettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         SettingsView(values: SettingsValues(bandSetUp: controller.snapshot.selected != nil,
-                                            battery: controller.snapshot.battery, hand: controller.snapshot.hand,
+                                            battery: controller.snapshot.battery,
+                                            handSetting: controller.snapshot.handSetting,
+                                            band: controller.snapshot.selected,
                                             canChangeHand: controller.snapshot.state == .streaming,
-                                            handBusy: controller.snapshot.handSetting.busy,
-                                            handError: controller.snapshot.handSetting.error,
                                             macs: links.macs, macPairing: links.pairing),
                      actions: SettingsActions(
                         forget: { controller.forgetBand(); dismiss() },
                         setHand: controller.setHand,
+                        wristFeedback: controller.wristFeedback,
+                        cancelWristFeedback: controller.cancelWristFeedback,
                         batteryAlertsChanged: { on in if on { Task { _ = await BatteryAlerts.requestPermission() } } },
                         pairMac: { text in
                             do { try links.pair(text); return nil }

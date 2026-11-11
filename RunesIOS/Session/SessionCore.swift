@@ -62,7 +62,7 @@ final class SessionCore: @unchecked Sendable {
     private var started = false
     private var handRequested = false
     private var wristFeedbackGate = WristFeedbackGate()
-    private var feedbackInFlight: (change: UUID, phase: WristFeedbackPhase)?
+    private var feedbackInFlight: WristFeedbackPhase?
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
 
@@ -153,7 +153,7 @@ final class SessionCore: @unchecked Sendable {
         snapshot.state = state; snapshot.message = message
         WakeProbe.shared.setBandState(state.rawValue)
         if state != .streaming {
-            snapshot.handSetting.cancel(); snapshot.wristFeedbackResult = nil; feedbackInFlight = nil
+            snapshot.handSetting.cancel(); feedbackInFlight = nil
             wristFeedbackGate.cancel(); pendingHandTarget = nil
             onRelayReady?(nil)
         }
@@ -388,7 +388,6 @@ final class SessionCore: @unchecked Sendable {
               snapshot.handSetting.change(to: hand) else { return }
         pendingHandTarget = (band, attempt)
         UserDefaults.standard.removeObject(forKey: "bandHand")
-        snapshot.wristFeedbackResult = nil
         if let change = snapshot.handSetting.changeID { wristFeedbackGate.begin(change) }
         record("hand", "Requested \(hand.rawValue) wrist."); publish()
         sendPendingHand()
@@ -413,11 +412,10 @@ final class SessionCore: @unchecked Sendable {
               snapshot.connectionAttempt.startedAt == attempt, snapshot.handSetting.confirmedChangeID == change,
               snapshot.hand == hand, let proto, proto.canSendWristFeedback,
               wristFeedbackGate.take(phase, change: change, now: now) else { return }
-        feedbackInFlight = (change, phase); snapshot.wristFeedbackResult = nil
+        feedbackInFlight = phase
         record("wrist_feedback", "\(phase.rawValue) requested.")
         do { try rpc("wrist_feedback", 6, 17, phase.payload) }
-        catch { snapshot.wristFeedbackResult = .unconfirmed; record("wrist_feedback", "Send unconfirmed.") }
-        publish()
+        catch { record("wrist_feedback", "Send unconfirmed.") }
     }
 
     func cancelWristFeedback(change: UUID) { wristFeedbackGate.cancel(change) }
@@ -502,8 +500,7 @@ final class SessionCore: @unchecked Sendable {
             snapshot.handSetting.fail(reason); record("hand", reason); publish()
         case .wristFeedback(let result):
             if let feedback = feedbackInFlight {
-                if snapshot.handSetting.confirmedChangeID == feedback.change { snapshot.wristFeedbackResult = result }
-                record("wrist_feedback", "\(feedback.phase.rawValue) \(result.rawValue).")
+                record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue).")
             }
             feedbackInFlight = nil
             sendPendingHand(); publish()

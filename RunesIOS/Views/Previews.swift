@@ -85,8 +85,10 @@ struct SnapshotGallery: View {
             StyleGuideGallery()
         } else if name == "ring-lab" || name == "ring-demo" {
             RingLab(autoplay: name == "ring-demo")
+        } else if name.hasPrefix("wrist") {
+            WristPreview(name: name)
         } else if name == "settings" {
-            SettingsView(values: SettingsValues(battery: 82, hand: .left, version: "0.2.0 (2)")) { EmptyView() }
+            SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left), version: "0.2.0 (2)")) { EmptyView() }
         } else if name == "mappings" {
             MappingsScreen(store: PreviewFixtures.mappings)
         } else if name == "mapping-editor" {
@@ -188,15 +190,48 @@ struct SnapshotGallery: View {
     }
 }
 
+private struct WristPreview: View {
+    var name = "wrist"
+    @State private var setting = HandSetting(confirmed: .right)
+
+    var body: some View {
+        NavigationStack {
+            WristView(setting: setting, connected: name != "wrist-disconnected", band: nil,
+                      choose: { hand in Task { await change(hand) } },
+                      feedback: { _, _, _ in }, cancelFeedback: { _ in })
+        }
+        .preferredColorScheme(.dark)
+        .dynamicTypeSize(name == "wrist-large" ? .accessibility3 : .large)
+        .task {
+            if name == "wrist-unknown" { setting = HandSetting() }
+            if name == "wrist-error" { setting.fail("The wrist setting was not confirmed. Try again.") }
+            if name == "wrist-demo" {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                await change(.left)
+                do { try await Task.sleep(for: .seconds(2.1)) } catch { return }
+                await change(.right)
+            }
+        }
+    }
+
+    @MainActor private func change(_ hand: Handedness) async {
+        guard setting.change(to: hand) else { return }
+        do { try await Task.sleep(for: .seconds(1.35)) } catch { return }
+        _ = setting.wrote()
+        _ = setting.received(hand)
+    }
+}
+
 #Preview("Home · connected") { HomeView(status: PreviewFixtures.home[2].1) }
 #Preview("Home · connecting") { HomeView(status: PreviewFixtures.home[1].1) }
 #Preview("Home · needs attention") { HomeView(status: PreviewFixtures.home[3].1) }
+#Preview("Wrist") { WristPreview() }
 #Preview("Home · not set up") { HomeView(status: PreviewFixtures.home[0].1) }
 #Preview("Home · pulse warning, dark") { HomeView(status: PreviewFixtures.home[4].1).preferredColorScheme(.dark) }
 #Preview("Onboarding · pick") { OnboardingView(step: .pick, context: PreviewFixtures.onboarding[3].2) }
 #Preview("Onboarding · sign in") { OnboardingView(step: .signIn, context: PreviewFixtures.onboarding[4].2) }
 #Preview("Onboarding · test") { OnboardingView(step: .test, context: PreviewFixtures.onboarding[5].2) }
-#Preview("Settings") { SettingsView(values: SettingsValues(battery: 82, hand: .left)) { AdvancedView(values: PreviewFixtures.advanced) } }
+#Preview("Settings") { SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left))) { AdvancedView(values: PreviewFixtures.advanced) } }
 #Preview("Mappings") { MappingsScreen(store: PreviewFixtures.mappings) }
 #Preview("Advanced") { NavigationStack { AdvancedView(values: PreviewFixtures.advanced) } }
 #Preview("Ring states") {
@@ -204,7 +239,7 @@ struct SnapshotGallery: View {
 }
 #Preview("Large type") { HomeView(status: PreviewFixtures.home[2].1).dynamicTypeSize(.accessibility2) }
 #Preview("Settings – Mac paired") {
-    SettingsView(values: SettingsValues(battery: 82, hand: .left,
+    SettingsView(values: SettingsValues(battery: 82, handSetting: HandSetting(confirmed: .left),
                                         macs: [MacLinks.Mac(id: UUID(), name: "Studio", state: .connected),
                                                MacLinks.Mac(id: UUID(), name: "MacBook Air", state: .notNearby)])) { EmptyView() }
 }

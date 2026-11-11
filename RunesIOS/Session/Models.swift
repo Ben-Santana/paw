@@ -18,7 +18,6 @@ struct SessionSnapshot: Sendable {
     var identityFingerprint: String?
     var battery: Int?
     var handSetting = HandSetting()
-    var wristFeedbackResult: WristFeedbackResult?
     var hand: Handedness? {
         get { handSetting.confirmed }
         set { handSetting.confirmed = newValue }
@@ -226,7 +225,7 @@ enum Handedness: String, Sendable {
     }
 }
 
-struct HandSetting: Sendable {
+struct HandSetting: Equatable, Sendable {
     enum Request: Equatable, Sendable { case read, write(Handedness), verify(Handedness) }
     var confirmed: Handedness?
     private(set) var pending: Request?

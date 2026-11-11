@@ -43,6 +43,9 @@ Six semantic tokens; dark mode inverts them. Never write a hex value in a view.
 Contrast: `muted` on `paper` is 5.6:1 light and 6.4:1 dark. `faint` is decorative only and
 never carries text.
 
+The Wrist scene uses a thin `wristGlow` blue outline during movement, with faint elliptical floor outlines.
+Its hand and ring strokes retain the shared monochrome treatment.
+
 ## 3. Type
 
 Geist, bundled (OFL). Every style is relative to a Dynamic Type text style and scales.

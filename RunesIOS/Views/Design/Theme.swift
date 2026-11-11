@@ -21,6 +21,7 @@ extension Color {
     static let soft = token(0xFAFAFA, 0x141416)
     /// Resting electrode strokes on the ring.
     static let faint = token(0xC9C9C9, 0x55555A)
+    static let wristGlow = token(0x2979FF, 0x78A7FF)
     /// The one colour: a destructive control that is about to remove something.
     static let destructive = Color(uiColor: .systemRed)
 }
@@ -100,6 +101,7 @@ struct PrimaryButtonStyle: ButtonStyle {
 }
 
 struct SecondaryButtonStyle: ButtonStyle {
+    var selected = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -108,7 +110,7 @@ struct SecondaryButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity, minHeight: Metric.row)
             .padding(.horizontal, 16)
             .background(configuration.isPressed ? Color.soft : Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
-            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(selected ? Color.ink : Color.rule, lineWidth: Metric.hairline))
             .opacity(enabled ? 1 : 0.45)
             .animation(.standard, value: configuration.isPressed)
     }
