@@ -39,10 +39,9 @@ final class BandProtocol {
     }
     func tick(now: TimeInterval) throws {
         if now >= deadline {
-            if ["trust", "ceremony"].contains(stage) { throw BandError.authentication("Band authentication timed out at \(stage). Retry in the foreground.") }
-            throw BandError.transport("Band startup timed out at \(stage).")
+            throw BandError.timeout(stage: stage)
         }
-        if let p = pending.values.first(where: { now >= $0.deadline }) { throw BandError.transport("Band request timed out: \(p.operation).") }
+        if let p = pending.values.first(where: { now >= $0.deadline }) { throw BandError.timeout(stage: p.operation) }
     }
     func encrypt(_ data: Data) throws -> Data {
         guard let tx else { throw BandError.wire("Encryption is not established.") }
@@ -207,11 +206,11 @@ final class BandProtocol {
     private func result(_ packet: Frame, kind: UInt32) throws -> (Data, [Signal]) {
         let channel = packet.channel & 0x7fff
         if stage == "trust", channel == 2 {
-            guard kind == 0x03001000 else { throw BandError.authentication("Band rejected host identity (result 0x\(String(kind, radix: 16)), channel \(packet.channel)). Check the selected public host fingerprint.") }
+            guard kind == 0x03001000 else { throw BandError.trust(.rejected(result: kind, channel: packet.channel)) }
             guard !hostTrusted else { throw BandError.wire("Duplicate host authentication acknowledgement (channel \(packet.channel)).") }
             hostTrusted = true; return (try maybeEnd(), [])
         }
-        if stage != "ready" { throw BandError.authentication("Band setup rejected (\(String(kind, radix: 16))).") }
+        if stage != "ready" { throw BandError.setupRejected(result: kind, channel: packet.channel) }
         if let p = pending[channel], p.operation == "emg_configuration" {
             pending[channel] = nil
             return (Data(), [.emgUnavailable("Band closed the EMG configuration service (\(String(kind, radix: 16))).")])

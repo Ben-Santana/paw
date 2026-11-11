@@ -11,6 +11,7 @@ struct SessionSnapshot: Sendable {
     var eventCount = 0
     var startedAt: Date?
     var journalError: String?
+    var connectionAttempt = ConnectionAttempt()
     var wantsConnection = false
     var identityChoices: [IdentityChoice] = []
     var identityAccount: UUID?
@@ -46,6 +47,110 @@ struct ReceiptContext: Codable, Sendable {
     let wallTime: Date
     let uptime: TimeInterval
     let applicationState: String
+}
+
+enum ConnectionStep: String, CaseIterable, Sendable {
+    case connecting = "Connecting to band"
+    case channelOpen = "Bluetooth channel open"
+    case encryption = "Starting encryption"
+    case encrypted = "Encryption established"
+    case enrollment = "Ownership setup"
+    case trust = "Verifying identity"
+    case trusted = "Phone identity accepted"
+    case subscribing = "Starting gestures"
+    case ready = "Ready for gestures"
+}
+
+struct ConnectionFailure: Equatable, Sendable {
+    enum Kind: Sendable { case identityMismatch, signatureRejected, unknownRejection, invalidBandProof, setupRejected, timeout, authentication, bluetooth, pairing, protocolResponse, storage, cancelled }
+    let kind: Kind
+    let result: UInt32?
+    let channel: UInt16?
+
+    init(_ error: BandError) {
+        var result: UInt32?, channel: UInt16?
+        switch error {
+        case .trust(.rejected(let value, let source)):
+            result = value; channel = source
+            switch value {
+            case 0x03001043: kind = .identityMismatch
+            case 0x03001044: kind = .signatureRejected
+            default: kind = .unknownRejection
+            }
+        case .trust(.invalidBandProof): kind = .invalidBandProof
+        case .setupRejected(let value, let source): kind = .setupRejected; result = value; channel = source
+        case .timeout: kind = .timeout
+        case .authentication: kind = .authentication
+        case .transport: kind = .bluetooth
+        case .pairing: kind = .pairing
+        case .wire: kind = .protocolResponse
+        case .storage: kind = .storage
+        case .cancelled: kind = .cancelled
+        }
+        self.result = result; self.channel = channel
+    }
+
+    var title: String {
+        switch kind {
+        case .identityMismatch: "Saved identity rejected"
+        case .signatureRejected: "Phone signature rejected"
+        case .unknownRejection: "Unknown authentication rejection"
+        case .invalidBandProof: "Band identity verification failed"
+        case .setupRejected: "Band setup rejected"
+        case .timeout: "Response timed out"
+        case .authentication: "Authentication failed"
+        case .bluetooth: "Bluetooth connection failed"
+        case .pairing: "Bluetooth pairing changed"
+        case .protocolResponse: "Unexpected protocol response"
+        case .storage: "Saved setup unavailable"
+        case .cancelled: "Cancelled"
+        }
+    }
+
+    var detail: String {
+        switch kind {
+        case .identityMismatch: "The band does not accept this phone’s saved identity. Import a setup that still works, or deliberately set up ownership again."
+        case .signatureRejected: "The band rejected this phone’s authentication signature. This does not establish that ownership changed."
+        case .unknownRejection: "The meaning of this result is not known. Saved setup was retained."
+        case .invalidBandProof: "The band’s proof did not match its saved key. Check the selected setup before changing ownership."
+        case .setupRejected: "The band refused setup. This result does not establish an owner identity mismatch."
+        case .timeout: "The band did not complete this step in time. A timeout does not establish an identity mismatch."
+        default: "See the existing journal for more detail."
+        }
+    }
+}
+
+struct ConnectionAttempt: Sendable {
+    enum Outcome: Sendable { case connecting, ready, failed, stopped }
+    private(set) var startedAt: Date?
+    private(set) var steps: [ConnectionStep] = []
+    private(set) var failure: ConnectionFailure?
+    private(set) var outcome = Outcome.connecting
+
+    mutating func begin(at date: Date = Date()) {
+        startedAt = date; steps = [.connecting]; failure = nil; outcome = .connecting
+    }
+    mutating func reach(_ step: ConnectionStep) {
+        guard startedAt != nil, outcome != .failed, outcome != .stopped else { return }
+        if !steps.contains(step) { steps.append(step) }
+        if step == .ready { outcome = .ready; failure = nil }
+    }
+    mutating func observeProtocolStage(_ stage: String?) {
+        switch stage {
+        case "ceremony": reach(.encrypted); reach(.enrollment)
+        case "trust", "device_info", "ready":
+            reach(.encrypted); reach(.trust)
+            if stage != "trust" { reach(.trusted) }
+        default: break
+        }
+    }
+    mutating func fail(_ error: BandError) {
+        guard startedAt != nil else { return }
+        failure = ConnectionFailure(error); outcome = .failed
+    }
+    mutating func stop() {
+        if startedAt != nil, outcome != .failed { outcome = .stopped }
+    }
 }
 
 struct GestureEvent: Identifiable, Codable, Sendable {
@@ -134,10 +239,10 @@ enum SessionIssue: String, Sendable, CaseIterable {
     var action: Action {
         switch self {
         case .bluetoothOff, .bluetoothDenied: return .openSettings
-        case .pairingChanged, .notRecognised: return .setUpAgain
+        case .pairingChanged: return .setUpAgain
         case .stillReleasing: return .retryRelease
         case .signInFailed: return .retrySignIn
-        case .bandNotNearby, .bandNotResponding, .pulseMissing, .phoneLocked: return .reconnect
+        case .notRecognised, .bandNotNearby, .bandNotResponding, .pulseMissing, .phoneLocked: return .reconnect
         }
     }
     var actionTitle: String {
@@ -155,7 +260,8 @@ enum SessionIssue: String, Sendable, CaseIterable {
     static func from(_ error: BandError) -> SessionIssue {
         switch error {
         case .pairing: return .pairingChanged
-        case .authentication: return .notRecognised
+        case .authentication, .trust, .setupRejected: return .notRecognised
+        case .timeout: return .bandNotResponding
         case .storage: return .phoneLocked
         case .wire: return .bandNotResponding
         case .transport, .cancelled: return .bandNotNearby
@@ -168,7 +274,11 @@ extension ConnectionRetryPolicy {
     /// connection, protocol and storage errors keep retrying for as long as the user wants
     /// the band connected; the user's Disconnect is the other way to stop.
     static func stopsAutoConnect(_ error: BandError) -> Bool {
-        switch error { case .authentication, .pairing: return true; default: return false }
+        switch error {
+        case .authentication, .trust, .setupRejected, .pairing: return true
+        case .timeout(let stage): return stage == "trust" || stage == "ceremony"
+        default: return false
+        }
     }
     /// Delay before reconnecting after a failure while the link was up. It never runs out:
     /// after the fast steps (1, 2, 4, 8, 16 s) it stays at the ceiling. A lost link is not

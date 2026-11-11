@@ -7,6 +7,47 @@ enum OwnershipStep {
 }
 struct PairCompletion { let signature: Data; let receipt: String; var bandPoint: Data? }
 
+struct BandSetupAuthorization {
+    struct Request: Equatable { let id = UUID(); let band: UUID }
+    private(set) var current: Request?
+
+    mutating func begin(for band: UUID) -> Request {
+        let request = Request(band: band); current = request; return request
+    }
+    mutating func cancel() { current = nil }
+    mutating func finish(_ request: Request) -> Bool {
+        guard current == request else { return false }
+        current = nil; return true
+    }
+    func validate(_ request: Request, selected: UUID?, foreground: Bool) throws {
+        guard current == request, selected == request.band else { throw BandError.cancelled }
+        guard foreground else { throw BandError.authentication("Return to Runes to set up your band.") }
+    }
+    static func canRestart(_ snapshot: SessionSnapshot, for band: UUID? = nil, foreground: Bool, signingIn: Bool) -> Bool {
+        foreground && !signingIn && snapshot.selected != nil && !snapshot.wantsConnection
+            && (band == nil || snapshot.selected == band)
+            && [.failed, .disconnected].contains(snapshot.state)
+    }
+}
+
+struct IdentityConfirmation {
+    enum Result: Equatable { case reconnect, committed, ignored }
+    private enum Phase { case inactive, connecting, reconnectRequired, verifying }
+    private var phase = Phase.inactive
+
+    mutating func beginConnection() { if phase != .verifying { phase = .connecting } }
+    mutating func enrolled() { phase = .reconnectRequired }
+    mutating func cancel() { phase = .inactive }
+    mutating func authenticated(commit: () throws -> Void) rethrows -> Result {
+        switch phase {
+        case .inactive: return .ignored
+        case .reconnectRequired: phase = .verifying; return .reconnect
+        case .connecting, .verifying:
+            try commit(); phase = .inactive; return .committed
+        }
+    }
+}
+
 final class OwnershipCeremony {
     private(set) var record: BandIdentity
     private var certificate = Data(), secondary = Data(), serial = ""

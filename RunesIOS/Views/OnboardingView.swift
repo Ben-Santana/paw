@@ -20,11 +20,15 @@ struct OnboardingContext: Equatable {
     var gesture: BandGesture?
     var heard: String?
     var testPassed = false
+    var canSetUpBandAgain = false
+    var selectedBand: UUID?
 
     static func == (a: Self, b: Self) -> Bool {
         a.bluetooth == b.bluetooth && a.devices.map(\.id) == b.devices.map(\.id) && a.searching == b.searching
             && a.working == b.working && a.issue == b.issue && a.phase == b.phase && a.gesture?.id == b.gesture?.id
             && a.heard == b.heard && a.testPassed == b.testPassed && a.systemPicker == b.systemPicker
+            && a.canSetUpBandAgain == b.canSetUpBandAgain
+            && a.selectedBand == b.selectedBand
     }
 }
 
@@ -40,6 +44,7 @@ struct OnboardingActions {
     var useMac: () -> Void = {}
     var resolve: (SessionIssue.Action) -> Void = { _ in }
     var finish: () -> Void = {}
+    var setUpBandAgain: (UUID) -> Void = { _ in }
 }
 
 struct OnboardingView: View {
@@ -159,7 +164,14 @@ struct OnboardingView: View {
         case .pick: pickList
         case .signIn: signInContent
         case .test, .done, .welcome, .bluetooth, .pairing:
-            if let issue = context.issue, step == .test { IssueCard(issue: issue, action: actions.resolve) }
+            if let issue = context.issue, step == .test {
+                VStack(spacing: 12) {
+                    IssueCard(issue: issue, action: actions.resolve)
+                    if issue == .notRecognised {
+                        BandSetupAgainAction(band: context.selectedBand, enabled: context.canSetUpBandAgain, action: actions.setUpBandAgain).panel()
+                    }
+                }
+            }
         }
     }
 
@@ -299,7 +311,8 @@ struct OnboardingFlow: View {
             workingText: controller.isSigningIn ? "Waiting for Meta sign-in…" : "Linking your band…",
             issue: step == .signIn && controller.uiError != nil ? .signInFailed : snapshot.issue,
             phase: BandStatus(snapshot, setupComplete: true, relayStatus: nil).phase,
-            gesture: snapshot.lastGesture, heard: heard, testPassed: passed)
+            gesture: snapshot.lastGesture, heard: heard, testPassed: passed,
+            canSetUpBandAgain: controller.canSetUpBandAgain, selectedBand: snapshot.selected)
     }
 
     private var actions: OnboardingActions {
@@ -323,7 +336,8 @@ struct OnboardingFlow: View {
             resolve: { action in
                 if action == .retrySignIn { controller.uiError = nil; controller.enroll() } else { controller.perform(action) }
             },
-            finish: { controller.completeSetup(); finished() })
+            finish: { controller.completeSetup(); finished() },
+            setUpBandAgain: controller.setUpBandAgain)
     }
 
     private func advance(to next: OnboardingStep) {

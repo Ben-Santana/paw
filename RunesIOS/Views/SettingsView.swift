@@ -130,6 +130,7 @@ struct SettingsView<Advanced: View>: View {
 /// Live settings sheet.
 struct SettingsScreen: View {
     @ObservedObject var controller: SessionController
+    var setUpBandAgain: (UUID) -> Void
     @ObservedObject private var links = MacLinks.shared
     @Environment(\.dismiss) private var dismiss
     var body: some View {
@@ -145,7 +146,7 @@ struct SettingsScreen: View {
                         },
                         removeMac: { links.remove($0) },
                         done: { dismiss() })) {
-            AdvancedScreen(controller: controller)
+            AdvancedScreen(controller: controller, setUpBandAgain: setUpBandAgain)
         }
     }
 }

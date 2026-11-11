@@ -5,7 +5,10 @@ struct AdvancedValues {
     var events: [GestureEvent] = []
     var eventCount = 0
     var canImportMacSetup = false
+    var canSetUpBandAgain = false
+    var selectedBand: UUID?
     var journalProblem: String?
+    var connectionAttempt = ConnectionAttempt()
 }
 
 struct AdvancedActions {
@@ -13,6 +16,7 @@ struct AdvancedActions {
     var clear: () -> Void = {}
     var pairMac: (String) -> Void = { _ in }
     var importMacSetup: (String) -> Void = { _ in }
+    var setUpBandAgain: (UUID) -> Void = { _ in }
 }
 
 /// Diagnostics that used to sit on the main screen. Raw packet codes are allowed here;
@@ -29,6 +33,7 @@ struct AdvancedView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                ConnectionAttemptView(attempt: values.connectionAttempt)
                 PanelGroup("Journal", caption: "Up to 4 MB of connection events and gestures, kept on this phone. Exports contain gesture data and device identifiers.") {
                     ActionRow(exporting ? "Preparing…" : "Export journal") {
                         exporting = true
@@ -51,6 +56,8 @@ struct AdvancedView: View {
                 }
                 PanelGroup("Band setup") {
                     ActionRow("Use my Mac’s band setup") { scanner = .identity }.disabled(!values.canImportMacSetup)
+                    Rule()
+                    BandSetupAgainAction(band: values.selectedBand, enabled: values.canSetUpBandAgain, action: actions.setUpBandAgain)
                 }
                 PanelGroup("Raw packets", caption: "\(values.eventCount) received this session. Newest first, up to 200.") {
                     if values.events.isEmpty {
@@ -93,14 +100,72 @@ struct AdvancedView: View {
 
 struct AdvancedScreen: View {
     @ObservedObject var controller: SessionController
+    var setUpBandAgain: (UUID) -> Void
     var body: some View {
         let snapshot = controller.snapshot
         AdvancedView(values: AdvancedValues(relayStatus: controller.relayStatus, events: snapshot.events, eventCount: snapshot.eventCount,
                                             canImportMacSetup: snapshot.selected != nil && !snapshot.wantsConnection,
-                                            journalProblem: snapshot.journalError),
+                                            canSetUpBandAgain: controller.canSetUpBandAgain,
+                                            selectedBand: snapshot.selected,
+                                            journalProblem: snapshot.journalError,
+                                            connectionAttempt: snapshot.connectionAttempt),
                      actions: AdvancedActions(export: controller.exportJournal, clear: controller.clearJournal,
                                               pairMac: controller.pairRelay,
-                                              importMacSetup: { text in if let id = snapshot.selected { controller.importIdentityQR(text, for: id) } }))
+                                              importMacSetup: { text in if let id = snapshot.selected { controller.importIdentityQR(text, for: id) } },
+                                              setUpBandAgain: setUpBandAgain))
+    }
+}
+
+struct BandSetupAgainAction: View {
+    var band: UUID?
+    var enabled: Bool
+    var action: (UUID) -> Void
+    @State private var confirm = false
+    @State private var confirmedBand: UUID?
+
+    var body: some View {
+        ActionRow("Set up band again") {
+            guard enabled, let band else { return }
+            confirmedBand = band; confirm = true
+        }
+            .disabled(!enabled)
+            .confirmationDialog("Set up this band again?", isPresented: $confirm, titleVisibility: .visible) {
+                Button("Continue with Meta", role: .destructive) {
+                    if enabled, let confirmedBand, band == confirmedBand { action(confirmedBand) }
+                }
+                .disabled(!enabled || band != confirmedBand)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This changes band ownership. Other devices may need to be set up again.")
+            }
+    }
+}
+
+private struct ConnectionAttemptView: View {
+    let attempt: ConnectionAttempt
+
+    var body: some View {
+        PanelGroup("Latest connection attempt", caption: "This app session. Earlier attempts remain in the journal.") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let started = attempt.startedAt {
+                    Text(started, style: .time).font(.caption).foregroundStyle(Color.muted)
+                    Text(attempt.steps.map(\.rawValue).joined(separator: " → ")).font(.caption)
+                    if let failure = attempt.failure {
+                        Text(failure.title).font(.label)
+                        if let result = failure.result, let channel = failure.channel {
+                            Text("\(String(format: "0x%08X", result)) · channel \(channel)")
+                                .font(.caption).monospaced()
+                        }
+                        Text(failure.detail).font(.caption).foregroundStyle(Color.muted)
+                    } else if attempt.outcome == .stopped {
+                        Text("Disconnected.").font(.caption).foregroundStyle(Color.muted)
+                    }
+                } else {
+                    Text("No connection attempted in this app session.").font(.caption).foregroundStyle(Color.muted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(Metric.inset)
+        }
     }
 }
 

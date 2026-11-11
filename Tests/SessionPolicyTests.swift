@@ -47,6 +47,16 @@ struct SessionPolicyTests {
         }
         precondition(SessionIssue.from(.transport("x")) == .bandNotNearby)
         precondition(SessionIssue.from(.pairing("x")).action == .setUpAgain)
+        for message in ["Band authentication timed out at trust. Retry in the foreground.",
+                        "Band rejected host identity (result 0x3001043, channel 2). Check the selected public host fingerprint."] {
+            var failed = SessionSnapshot()
+            failed.selected = UUID(); failed.state = .failed
+            failed.issue = SessionIssue.from(.authentication(message))
+            let status = BandStatus(failed, setupComplete: true, relayStatus: nil)
+            precondition(status.phase == .attention)
+            precondition(status.issue?.action == .reconnect, "The error card and main ring must retry without forgetting the band")
+            precondition(status.issue?.actionTitle == "Try again")
+        }
         for phase in [BandPhase.notSetUp, .paused, .connecting, .connected, .attention] {
             for word in banned { precondition(!phase.title.lowercased().contains(word)) }
         }
