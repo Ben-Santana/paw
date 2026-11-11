@@ -1,7 +1,9 @@
 // Isolated checks for workouts: the run's set flow, control gestures and rep counting.
 //
 //     swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift \
-//       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift \
+//       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
+//       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift Shared/MuscleFigure.swift \
+//       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift \
 //       Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
 import Foundation
 
@@ -51,8 +53,39 @@ struct WorkoutTests {
         precondition(controls.command(for: .doubleTapIndex) == .start)
         controls.set(.doubleTapMiddle, for: .start)
         precondition(controls.gesture(for: .start) == .doubleTapMiddle && controls.gesture(for: .stop) == .doubleTapIndex, "Swapped")
-        let decoded = try! JSONDecoder().decode(WorkoutControls.self, from: JSONEncoder().encode(controls))
+        var decoded = try! JSONDecoder().decode(WorkoutControls.self, from: JSONEncoder().encode(controls))
         precondition(decoded == controls, "Controls round-trip")
+        // Settings saved when a command had one gesture still load.
+        decoded = try! JSONDecoder().decode(WorkoutControls.self, from: Data(#"{"gestures":["start","hold-index","skip","swipe-up"]}"#.utf8))
+        precondition(decoded.gesture(for: .start) == .holdIndex && decoded.gesture(for: .skip) == .swipeUp && decoded.trigger(for: .stop) == nil)
+
+        // A command can take a combo. The engine Mappings uses decides when it was made.
+        controls = .standard
+        let hold = CommandTrigger(steps: [.holdMiddle, .swipeUp, .releaseMiddle].steps, intervalMs: 500)
+        controls.setTrigger(hold, for: .skip)
+        precondition(controls.trigger(for: .skip) == hold && controls.gesture(for: .skip) == nil && controls.command(for: .swipeRight) == nil)
+        precondition(controls.reserved == [.doubleTapIndex, .tapIndex, .doubleTapMiddle, .tapMiddle, .swipeLeft, .holdMiddle, .releaseMiddle, .swipeUp])
+        controls.setTrigger(hold, for: .repeatLast)
+        precondition(controls.trigger(for: .repeatLast) == hold && controls.gesture(for: .skip) == .swipeLeft, "Taking a combo swaps too")
+        precondition(try! JSONDecoder().decode(WorkoutControls.self, from: JSONEncoder().encode(controls)) == controls, "Combos round-trip")
+        var engine = MappingEngine(mappings: controls.mappings)
+        func made(_ events: [MappingEngine.Event]) -> [WorkoutCommand] {
+            events.compactMap { if case .fire(let id, _) = $0 { controls.command(forMapping: id) } else { nil } }
+        }
+        precondition(made(engine.receive(.swipeLeft, at: 0)) == [.skip])
+        precondition(made(engine.receive(.holdMiddle, at: 1) + engine.receive(.swipeUp, at: 5)).isEmpty, "Held, so no time limit")
+        precondition(made(engine.receive(.releaseMiddle, at: 9)) == [.repeatLast])
+        precondition(made(engine.receive(.doubleTapIndex, at: 10)) == [.start])
+        // Rotation, movement and air steps work too.
+        controls.setTrigger(CommandTrigger(steps: [ComboStep(.tapIndex), .rotation(.x)]), for: .start)
+        precondition(controls.usesMotion && controls.reserved.contains(.rotation) && controls.mappings.count == 4)
+        engine = MappingEngine(mappings: controls.mappings)
+        precondition(made(engine.receive(.tapIndex, at: 20)).isEmpty)
+        precondition(made(engine.receive(.rotation(.y, .left), at: 20.2)).isEmpty, "Another axis doesn't count")
+        precondition(made(engine.receive(.rotation(.x, .left), at: 20.4)) == [.start], "Either way on X does")
+        precondition(CommandTrigger(steps: [.rotation(.x), ComboStep(.tapIndex)]).isValid, "A combo may start with motion")
+        precondition(!CommandTrigger(steps: [.rotation(.x)]).isValid, "but motion can't stand alone")
+        precondition(!CommandTrigger(steps: [ComboStep(.tapIndex), ComboStep(.air)]).isValid, "An air step needs its shape")
 
         // Swing counting: a rep is a turn past the high threshold after settling under the low one.
         var curl = RepCounter(exercise: .bicepCurl)

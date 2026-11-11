@@ -6,8 +6,13 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var showMappings = false
     @State private var showApplications = false
-    @State private var openedApp: RunesApp?
+    /// The app shown full screen, kept while its cover slides away so it doesn't go blank.
+    @State private var openedApp: RunesApp = .workouts
+    @State private var showApp = false
+    /// An app a widget asked for while another full-screen page was up; shown once that page has gone.
+    @State private var queuedApp: RunesApp?
     @State private var showSetup = false
+    @ObservedObject private var links = AppLinkRouter.shared
 
     private var status: BandStatus {
         BandStatus(controller.snapshot, setupComplete: controller.setupComplete, relayStatus: controller.relayStatus)
@@ -23,7 +28,7 @@ struct RootView: View {
                     openSettings: { showSettings = true },
                     openMappings: { showMappings = true },
                     openApplications: { showApplications = true },
-                    openApp: { openedApp = $0 },
+                    openApp: { openedApp = $0; showApp = true },
                     resolve: resolve))
             } else {
                 OnboardingFlow(controller: controller, finished: { showSetup = false })
@@ -31,17 +36,19 @@ struct RootView: View {
             }
         }
         .animation(.entrance, value: controller.setupComplete)
-        .fullScreenCover(isPresented: $showSettings) {
+        .fullScreenCover(isPresented: $showSettings, onDismiss: showQueuedApp) {
             SettingsScreen(controller: controller)
         }
-        .fullScreenCover(isPresented: $showMappings) {
+        .fullScreenCover(isPresented: $showMappings, onDismiss: showQueuedApp) {
             MappingsScreen(store: .shared, done: { showMappings = false })
         }
-        .fullScreenCover(isPresented: $showApplications) {
+        .fullScreenCover(isPresented: $showApplications, onDismiss: showQueuedApp) {
             ApplicationsScreen(workouts: .shared, done: { showApplications = false })
         }
-        .fullScreenCover(item: $openedApp) { app in
-            ApplicationsScreen(workouts: .shared, initialRoute: app.route, done: { openedApp = nil })
+        .fullScreenCover(isPresented: $showApp) {
+            // A widget can swap the app while it is up; the new id starts it from its first screen.
+            ApplicationsScreen(workouts: .shared, initialRoute: openedApp.route, done: { showApp = false })
+                .id(openedApp)
         }
         .sheet(item: Binding(get: { controller.loginRequest }, set: { if $0 == nil { controller.loginSheetDismissed() } }),
                onDismiss: controller.loginSheetDismissed) { request in
@@ -54,6 +61,33 @@ struct RootView: View {
         .alert("Runes", isPresented: Binding(get: { controller.uiError != nil }, set: { if !$0 { controller.uiError = nil } })) {
             Button("OK", role: .cancel) { controller.uiError = nil }
         } message: { Text(controller.uiError ?? "") }
+        .onOpenURL { links.open(url: $0) }
+        .onChange(of: links.pending, initial: true) { _, app in
+            guard let app else { return }
+            links.pending = nil
+            open(app)
+        }
+    }
+
+    /// Shows an app a widget asked for, whatever full-screen page was open.
+    private func open(_ app: RunesApp) {
+        guard controller.setupComplete, !showSetup else { return }
+        if showApp {
+            // Already showing an app: change it in place. Leave the same app where it was.
+            if openedApp != app { openedApp = app }
+        } else if showSettings || showMappings || showApplications {
+            // A cover can't come up while another leaves, so wait for its onDismiss.
+            queuedApp = app
+            showSettings = false; showMappings = false; showApplications = false
+        } else {
+            openedApp = app; showApp = true
+        }
+    }
+
+    private func showQueuedApp() {
+        guard let app = queuedApp else { return }
+        queuedApp = nil
+        openedApp = app; showApp = true
     }
 
     private func resolve(_ action: SessionIssue.Action) {

@@ -199,7 +199,7 @@ struct StepIcon: View {
             GestureIcon(gesture: step.gesture, size: size)
             if let axis = step.axis {
                 Text(axis.rawValue.uppercased() + (step.gesture == .rotation ? (step.direction ?? .any).arrow : ""))
-                    .font(.geist(max(10, size * 0.6), .medium, relativeTo: .caption2)).foregroundStyle(Color.muted)
+                    .font(.geist(max(10, size * 0.6), .medium, relativeTo: .caption2)).opacity(0.6)
             }
         }
         .accessibilityElement().accessibilityLabel(step.name)
@@ -264,12 +264,6 @@ struct MappingEditor: View {
     let title: String
     @Environment(\.dismiss) private var dismiss
     @State private var editingAction: Int?
-    /// The step open in the inspector sheet.
-    @State private var editingStep: Int?
-    /// The air step whose shape is being edited; the step count means a new step.
-    @State private var editingAir: Int?
-    @State private var recording = false
-    @State private var recordedThrough = 0
     @State private var confirmDelete = false
     /// A change that reuses a gesture a paired Mac already uses, waiting for the person's OK.
     @State private var pendingOverlap: Mapping?
@@ -319,17 +313,6 @@ struct MappingEditor: View {
                         }
                     }
                 }
-                .sheet(item: Binding(get: { editingAir.map(EditingIndex.init) }, set: { editingAir = $0?.id })) { item in
-                    let steps = mapping.steps ?? []
-                    AirGestureEditor(store: store, initial: steps.indices.contains(item.id) ? steps[item.id].air : nil) { shape in
-                        edit { m in
-                            var steps = m.steps ?? []
-                            if steps.indices.contains(item.id) { steps[item.id] = .airShape(shape) }
-                            else if steps.count < ComboRules.steps.upperBound { steps.append(.airShape(shape)) }
-                            m.steps = steps
-                        }
-                    }
-                }
                 .alert("Already used on your Mac", isPresented: Binding(get: { pendingOverlap != nil && editingAction == nil },
                                                                      set: { if !$0 { pendingOverlap = nil } })) {
                     Button("Set anyway") { if let m = pendingOverlap { store.save(m) }; pendingOverlap = nil }
@@ -348,9 +331,7 @@ struct MappingEditor: View {
         }
         .page()
         .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-        .onChange(of: store.recent) { _, recent in record(recent) }
         .onDisappear {
-            stopRecording()
             // An untouched new combo leaves no empty row behind.
             if let mapping, mapping.isCombo, mapping.steps?.isEmpty ?? true, mapping.actions.isEmpty { store.remove(mappingID: mappingID) }
         }
@@ -396,128 +377,20 @@ struct MappingEditor: View {
 
     // MARK: Steps
 
-    @ViewBuilder private func stepsSection(_ mapping: Mapping) -> some View {
-        let steps = mapping.steps ?? []
-        MappingGroup("Steps", caption: ComboRules.problem(steps) ?? (mapping.usesMotion
-            ? "Make them in this order. While a finger is held there’s no time limit. Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
-            : "Make them in this order. While a finger is held there’s no time limit.")) {
+    /// The combo's name and its steps, built with the same composer every app's gestures use.
+    private func stepsSection(_ mapping: Mapping) -> some View {
+        MappingGroup("Steps") {
             TextField("Combo name (optional)", text: Binding(get: { mapping.name ?? "" }, set: { text in edit { $0.name = text.isEmpty ? nil : String(text.prefix(40)) } }))
                 .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
             RowDivider()
-            VStack(alignment: .leading, spacing: 10) {
-                if steps.isEmpty {
-                    Text(recording ? "Make the gestures on your band…" : "Add steps below, or record them from your band.")
-                        .font(.bodyText).foregroundStyle(Color.muted)
-                } else {
-                    FlowLayout(spacing: 6) {
-                        ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                            Button { editingStep = index } label: {
-                                HStack(spacing: 6) {
-                                    Text("\(index + 1)").font(.caption).foregroundStyle(Color.muted).monospacedDigit()
-                                    StepIcon(step: step, size: 18)
-                                    Text(step.shortName).font(.label)
-                                }
-                                .padding(.horizontal, 10).frame(minHeight: 36)
-                                .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(PressRow())
-                            .id(step)
-                            .transition(.scale(scale: 0.9).combined(with: .opacity))
-                            .accessibilityLabel("Step \(index + 1), \(step.name)")
-                            .accessibilityHint("Opens the step.")
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            RowDivider()
-            HStack(spacing: 0) {
-                Menu {
-                    let allowed = ComboRules.allowedNext(after: steps)
-                    ForEach(["index", "middle"], id: \.self) { finger in
-                        Section(finger == "index" ? "Index finger" : "Middle finger") {
-                            ForEach(allowed.filter { $0.finger == finger }, id: \.self) { kind in
-                                menuItem(kind.shortName, gesture: kind) { edit { $0.steps = (($0.steps ?? []) + [ComboStep(kind)]) } }
-                            }
-                        }
-                    }
-                    Section("Swipe") {
-                        ForEach(allowed.filter { $0.finger == nil && !$0.isMotion }, id: \.self) { kind in
-                            menuItem(kind.name, gesture: kind) { edit { $0.steps = (($0.steps ?? []) + [ComboStep(kind)]) } }
-                        }
-                    }
-                    Section("Motion") {
-                        menuItem("Rotation", gesture: .rotation) { edit { $0.steps = (($0.steps ?? []) + [.rotation(.x)]) } }
-                        menuItem("Movement", gesture: .movement) { edit { $0.steps = (($0.steps ?? []) + [.movement(.x)]) } }
-                        if allowed.contains(.air) { menuItem("Air gesture", gesture: .air) { editingAir = steps.count } }
-                    }
-                } label: {
-                    Label { Text("Add step") } icon: { LucideIcon(.plus, size: 18) }.font(.bodyText)
-                        .frame(maxWidth: .infinity, minHeight: Metric.row).contentShape(Rectangle())
-                }
-                .disabled(steps.count >= ComboRules.steps.upperBound)
-                Rectangle().fill(Color.rule).frame(width: Metric.hairline).padding(.vertical, 10)
-                Button { recording ? stopRecording() : startRecording() } label: {
-                    Label { Text(recording ? "Stop" : "Record") } icon: { LucideIcon(recording ? .x : .circleDot, size: 18) }.font(.bodyText)
-                        .frame(maxWidth: .infinity, minHeight: Metric.row).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            RowDivider()
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Time between steps").font(.bodyText).padding(.horizontal, Metric.inset)
-                ChipRow(selection: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
-                        options: ComboRules.times) { ms in ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000) }
-                    .accessibilityLabel("Time between steps")
-            }
-            .padding(.vertical, 12)
+            TriggerComposer(steps: Binding(get: { mapping.steps ?? [] }, set: { steps in edit { $0.steps = steps } }),
+                            interval: Binding(get: { mapping.intervalMs ?? ComboRules.defaultTime }, set: { ms in edit { $0.intervalMs = ms } }),
+                            rules: .combo,
+                            note: mapping.usesMotion ? "Rotation, movement and air gestures turn on the band’s motion sensors while this combo is on, which uses more battery."
+                                                     : "Touch a step to change, move or remove it.",
+                            feed: store, collapses: true)
+                .padding(Metric.inset)
         }
-        .animation(.standard, value: steps)
-        .sheet(isPresented: Binding(get: { editingStep != nil }, set: { if !$0 { editingStep = nil } })) {
-            if let index = editingStep, let steps = mapping.steps, steps.indices.contains(index) {
-                StepSheet(step: steps[index], index: index, count: steps.count,
-                          update: { updated in edit { $0.steps?[index] = updated } },
-                          move: { offset in moveStep(index, by: offset); editingStep = index + offset },
-                          editShape: { editingAir = index },
-                          remove: { edit { $0.steps?.remove(at: index) } })
-            }
-        }
-    }
-
-    private func moveStep(_ index: Int, by offset: Int) {
-        edit { m in
-            guard var steps = m.steps, steps.indices.contains(index + offset) else { return }
-            steps.swapAt(index, index + offset)
-            m.steps = steps
-        }
-    }
-
-    private func startRecording() {
-        recordedThrough = store.recent.last?.id ?? 0
-        store.paused = true
-        recording = true
-    }
-    private func stopRecording() {
-        guard recording else { return }
-        recording = false
-        store.paused = false
-    }
-    /// Appends each new band gesture as a step, skipping any that would break hold order.
-    private func record(_ recent: [MappingStore.RecentGesture]) {
-        guard recording else { return }
-        // Motion is set by hand (axis, direction); only taps, holds and swipes are recorded.
-        let new = recent.filter { $0.id > recordedThrough && !$0.gesture.isMotion && !$0.gesture.isAir }
-        recordedThrough = recent.last?.id ?? recordedThrough
-        for item in new {
-            edit { m in
-                var steps = m.steps ?? []
-                guard steps.count < ComboRules.steps.upperBound, ComboRules.allowedNext(after: steps).contains(item.gesture) else { return }
-                steps.append(item.step); m.steps = steps
-            }
-        }
-        if (mapping?.steps?.count ?? 0) >= ComboRules.steps.upperBound { stopRecording() }
     }
 
     // MARK: Actions
@@ -861,112 +734,12 @@ private struct ProfileSheet: View {
     }
 }
 
-// MARK: Step sheet
-
-/// One combo step up close: its axis and direction, its place in the order, and removal.
-private struct StepSheet: View {
-    let step: ComboStep
-    let index: Int
-    let count: Int
-    let update: (ComboStep) -> Void
-    let move: (Int) -> Void
-    let editShape: () -> Void
-    let remove: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 28) {
-                    VStack(spacing: 10) {
-                        StepIcon(step: step, size: 40).frame(height: 44)
-                        Text(step.name).font(.heading).contentTransition(.opacity)
-                        Text("Step \(index + 1) of \(count)").font(.caption).foregroundStyle(Color.muted).contentTransition(.numericText())
-                    }
-                    .frame(maxWidth: .infinity).padding(.top, 4)
-                    .animation(.standard, value: step)
-                    .animation(.standard, value: index)
-                    if step.gesture.isMotion {
-                        Block {
-                            HairlineSegments(selection: Binding(get: { step.axis ?? .x }, set: { var s = step; s.axis = $0; update(s) }),
-                                             options: Axis.allCases, title: \.label)
-                        } header: { Heading("Axis") }
-                    }
-                    if step.gesture == .rotation {
-                        Block {
-                            HairlineSegments(selection: Binding(get: { step.direction ?? .any }, set: { var s = step; s.direction = $0; update(s) }),
-                                             options: RotationDirection.allCases, title: \.label)
-                        } header: { Heading("Direction") }
-                    }
-                    if step.gesture.isAir {
-                        Button { dismiss(); editShape() } label: { Label { Text("Edit shape") } icon: { LucideIcon(.pencil, size: 16) } }
-                            .buttonStyle(.secondary)
-                    }
-                    HStack(spacing: 12) {
-                        Button { move(-1) } label: { Label { Text("Earlier") } icon: { LucideIcon(.arrowLeft, size: 16) } }
-                            .buttonStyle(.secondary).disabled(index == 0)
-                        Button { move(1) } label: { Label { Text("Later") } icon: { LucideIcon(.arrowRight, size: 16) } }
-                            .buttonStyle(.secondary).disabled(index >= count - 1)
-                    }
-                    .sensoryFeedback(.impact(weight: .light), trigger: index)
-                    Button("Remove step") { dismiss(); remove() }.buttonStyle(.quiet)
-                }
-                .padding(Metric.gutter)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .page()
-            .navigationTitle("Step").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
-        }
-        .tint(Color.ink)
-        .presentationDetents([.medium, .large])
-    }
-}
-
-private extension Axis { var label: String { rawValue.uppercased() } }
-private extension RotationDirection {
-    var label: String { switch self { case .left: "← Left"; case .right: "Right →"; case .any: "Either way" } }
-}
-
 // MARK: Building blocks
 
 /// The Mappings name for the guide's PanelGroup.
 typealias MappingGroup = PanelGroup
 /// The Mappings name for the guide's Rule.
 typealias RowDivider = Rule
-
-/// Wraps chips onto as many lines as they need.
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = arrange(subviews, width: proposal.width ?? .infinity)
-        return CGSize(width: rows.map(\.width).max() ?? 0, height: rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, rows.count - 1)))
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
-        for row in arrange(subviews, width: bounds.width) {
-            var x = bounds.minX
-            for index in row.items {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: .unspecified)
-                x += size.width + spacing
-            }
-            y += row.height + spacing
-        }
-    }
-    private func arrange(_ subviews: Subviews, width: CGFloat) -> [(items: [Int], width: CGFloat, height: CGFloat)] {
-        var rows: [(items: [Int], width: CGFloat, height: CGFloat)] = []
-        var current: (items: [Int], width: CGFloat, height: CGFloat) = ([], 0, 0)
-        for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            let next = current.items.isEmpty ? size.width : current.width + spacing + size.width
-            if next > width, !current.items.isEmpty { rows.append(current); current = ([index], size.width, size.height) }
-            else { current = (current.items + [index], next, max(current.height, size.height)) }
-        }
-        if !current.items.isEmpty { rows.append(current) }
-        return rows
-    }
-}
 
 // MARK: Icons (the Mac app's)
 

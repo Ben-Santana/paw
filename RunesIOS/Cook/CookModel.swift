@@ -34,60 +34,68 @@ enum CookCommand: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Which gesture does what while cooking.
+/// Which gesture or combo does what while cooking.
 struct CookControls: Codable, Hashable, Sendable {
-    var gestures: [CookCommand: GestureKind]
+    var triggers: [CookCommand: CommandTrigger]
 
     /// Side swipes turn the page and up and down move between a step's timers, as on
     /// screen. The index finger runs the selected timer. Double taps, because one pinch
     /// happens by itself when hands are busy with a knife or a pan.
-    static let standard = CookControls(gestures: [
+    static let standard = CookControls(gestures: standardGestures)
+    private static let standardGestures: [CookCommand: GestureKind] = [
         .next: .swipeRight, .previous: .swipeLeft, .timer: .doubleTapIndex, .addMinute: .doubleTapMiddle,
         .reset: .holdMiddle, .timerDown: .swipeDown, .timerUp: .swipeUp,
-    ])
-    static let choices = GestureKind.motions
+    ]
+    /// Gestures a command may use on its own. Releases only exist inside combos.
+    static let choices = CommandTrigger.singleChoices
+    private static let mappingPrefix = "cook:"
 
-    func gesture(for command: CookCommand) -> GestureKind? { gestures[command] }
+    init(triggers: [CookCommand: CommandTrigger]) { self.triggers = triggers }
+    init(gestures: [CookCommand: GestureKind]) { triggers = gestures.mapValues(CommandTrigger.gesture) }
+
+    func trigger(for command: CookCommand) -> CommandTrigger? { triggers[command] }
+    /// The command's gesture, when it is a single one.
+    func gesture(for command: CookCommand) -> GestureKind? { triggers[command]?.gesture }
     func command(for gesture: GestureKind) -> CookCommand? {
-        CookCommand.allCases.first { gestures[$0] == gesture }
+        CookCommand.allCases.first { triggers[$0]?.gesture == gesture }
     }
-    /// Assigns a gesture; a command that already had it takes this command's old one.
-    mutating func set(_ gesture: GestureKind?, for command: CookCommand) {
-        if let gesture, let other = self.command(for: gesture), other != command { gestures[other] = gestures[command] }
-        gestures[command] = gesture
-    }
+    /// Assigns a trigger; a command that already had it takes this command's old one.
+    mutating func setTrigger(_ trigger: CommandTrigger?, for command: CookCommand) { triggers.assign(trigger, to: command) }
+    mutating func set(_ gesture: GestureKind?, for command: CookCommand) { setTrigger(gesture.map(CommandTrigger.gesture), for: command) }
 
     /// The gestures cooking takes; mappings that use one are off until it ends. A double
     /// tap arrives after the tap that began it and a hold ends with a release, so those
     /// are taken with them.
-    var reserved: Set<GestureKind> {
-        var set = Set(gestures.values)
-        if set.contains(.doubleTapIndex) { set.insert(.tapIndex) }
-        if set.contains(.doubleTapMiddle) { set.insert(.tapMiddle) }
-        if set.contains(.holdIndex) { set.insert(.releaseIndex) }
-        if set.contains(.holdMiddle) { set.insert(.releaseMiddle) }
-        return set
-    }
+    var reserved: Set<GestureKind> { triggers.reserved }
+    /// The triggers as mappings, for the engine that decides which one was made.
+    var mappings: [Mapping] { triggers.mappings(prefix: Self.mappingPrefix) }
+    /// Whether cooking needs the band's motion streams for a rotation, movement or air step.
+    var usesMotion: Bool { triggers.usesMotion }
+    func command(forMapping id: String) -> CookCommand? { triggers.command(forMapping: id, prefix: Self.mappingPrefix) }
 
-    private enum Keys: String, CodingKey { case gestures, version }
-    /// 2 added reset and moving between a step's timers.
-    private static let version = 2
+    private enum Keys: String, CodingKey { case gestures, triggers, version }
+    /// 2 added reset and moving between a step's timers. 3 lets a command take a combo.
+    private static let version = 3
 
-    init(gestures: [CookCommand: GestureKind]) { self.gestures = gestures }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
-        gestures = try c.decode([CookCommand: GestureKind].self, forKey: .gestures)
+        if let saved = try c.decodeIfPresent([String: CommandTrigger].self, forKey: .triggers) {
+            triggers = Dictionary(saved: saved)
+            return
+        }
+        // Saved before a command could take a combo: one gesture each.
+        triggers = try c.decode([CookCommand: GestureKind].self, forKey: .gestures).mapValues(CommandTrigger.gesture)
         // Settings saved before a command existed get its usual gesture, if it is free.
         // After that, "None" is a choice and stays.
         if ((try? c.decode(Int.self, forKey: .version)) ?? 1) < 2 {
-            for command in [CookCommand.reset, .timerDown, .timerUp] where gestures[command] == nil {
-                if let usual = Self.standard.gestures[command], self.command(for: usual) == nil { gestures[command] = usual }
+            for command in [CookCommand.reset, .timerDown, .timerUp] where triggers[command] == nil {
+                if let usual = Self.standardGestures[command], self.command(for: usual) == nil { triggers[command] = .gesture(usual) }
             }
         }
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
-        try c.encode(gestures, forKey: .gestures)
+        try c.encode(triggers.saved, forKey: .triggers)
         try c.encode(Self.version, forKey: .version)
     }
 }

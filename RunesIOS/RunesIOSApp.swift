@@ -13,6 +13,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ = SessionController.shared
         return true
     }
+    /// A scene delegate of our own, so widget links arrive whatever is on screen: SwiftUI's
+    /// `onOpenURL` only reaches the frontmost presentation, not `RootView` under a cover.
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = LinkSceneDelegate.self
+        return configuration
+    }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                              willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         // The cooking screen shows and sounds a finished timer itself.
@@ -30,6 +38,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     private func lifecycle(_ state: String) {
         guard RunesIOSApp.snapshotName == nil else { return }
         SessionController.shared.lifecycle(state)
+    }
+}
+
+/// Hands `runes://app/<id>` links (from the Home Screen widgets) to `AppLinkRouter`.
+final class LinkSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        for context in connectionOptions.urlContexts { AppLinkRouter.shared.open(url: context.url) }
+    }
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts { AppLinkRouter.shared.open(url: context.url) }
+    }
+}
+
+/// The app a widget link asked for, until `RootView` shows it.
+@MainActor
+final class AppLinkRouter: ObservableObject {
+    static let shared = AppLinkRouter()
+    @Published var pending: RunesApp?
+
+    func open(url: URL) {
+        if let link = AppLink(url: url), let app = RunesApp(rawValue: link.rawValue) { pending = app }
     }
 }
 

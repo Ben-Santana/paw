@@ -31,7 +31,7 @@ final class SessionController: ObservableObject {
     private let tapHaptic = UIImpactFeedbackGenerator(style: .light)
     private let holdHaptic = UIImpactFeedbackGenerator(style: .medium)
     private let swipeHaptic = UIImpactFeedbackGenerator(style: .soft)
-    private var motionDemand = (mappings: false, workout: false, lab: false)
+    private var motionDemand = (mappings: false, workout: false, cook: false, lab: false)
     /// Gestures each running app has taken; mappings that use any of them are off meanwhile.
     private var reservations: [RunesApp: Set<GestureKind>] = [:]
 
@@ -70,9 +70,21 @@ final class SessionController: ObservableObject {
         core.onMotion = { kind, values in
             let steps = kind == .orientation ? [motion.detector.orientation(values)].compactMap { $0 }
                       : kind == .gyro ? motion.detector.gyroscope(values) : []
-            for step in steps { Task { @MainActor in MappingStore.shared.receive(step) } }
+            // A running workout or recipe takes the motion its combos use; the rest goes to mappings.
+            for step in steps {
+                Task { @MainActor in
+                    let mappings = MappingStore.shared
+                    if mappings.paused || (!WorkoutStore.shared.consume(step) && !CookStore.shared.consume(step)) { mappings.receive(step) }
+                }
+            }
             // Air gestures trace the raw orientation.
-            if kind == .orientation { Task { @MainActor in MappingStore.shared.orientation(values) } }
+            if kind == .orientation {
+                Task { @MainActor in
+                    MappingStore.shared.orientation(values)
+                    WorkoutStore.shared.orientation(values)
+                    CookStore.shared.orientation(values)
+                }
+            }
             // Workout reps are counted here too, from the same raw samples.
             if kind == .orientation || kind == .gyro,
                feed.ingest(orientation: kind == .orientation, values, at: ProcessInfo.processInfo.systemUptime) {
@@ -82,6 +94,7 @@ final class SessionController: ObservableObject {
         // Combos and a running workout both ask for motion; the streams run while either does.
         MappingStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.mappings = on; self?.pushMotionDemand() }
         WorkoutStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.workout = on; self?.pushMotionDemand() }
+        CookStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.cook = on; self?.pushMotionDemand() }
         // Motion Lab: raw samples go straight to the recorder on the transport queue; EMG only while recording.
         let recorder = MotionLab.recorder
         core.onRaw = { recorder.ingest($0) }
@@ -92,6 +105,7 @@ final class SessionController: ObservableObject {
             self.core.transport.perform { [weak core = self.core] in core?.setLocalEMG(on) }
         }
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
+        WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
         CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
         CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
@@ -144,7 +158,7 @@ final class SessionController: ObservableObject {
     }
 
     private func pushMotionDemand() {
-        let on = motionDemand.mappings || motionDemand.workout || motionDemand.lab
+        let on = motionDemand.mappings || motionDemand.workout || motionDemand.cook || motionDemand.lab
         core.transport.perform { [weak core] in core?.setLocalMotion(on) }
     }
 
@@ -173,8 +187,11 @@ final class SessionController: ObservableObject {
         // Mappings and workouts run in the background too, so they come before the foreground check.
         // A running app's control gestures don't also run mappings: a workout, a live game,
         // a recipe being cooked, or Capture waiting for a hold.
-        if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
-           !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
+        // While an editor listens for steps (`paused`), gestures reach it and nothing else.
+        if MappingStore.shared.paused {
+            MappingStore.shared.receive(gesture)
+        } else if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
+                  !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
         switch gesture.kind {
         case .tap, .doubleTap: tapHaptic.impactOccurred()

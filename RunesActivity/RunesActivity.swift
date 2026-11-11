@@ -4,7 +4,11 @@ import SwiftUI
 
 @main
 struct RunesActivityBundle: WidgetBundle {
-    var body: some Widget { BandSessionActivity() }
+    var body: some Widget {
+        BandSessionActivity()
+        OneAppWidget()
+        FourAppsWidget()
+    }
 }
 
 struct BandSessionActivity: Widget {

@@ -2,7 +2,8 @@
 // and a recipe being cooked (steps, timers that start, pause, reset and take a minute one at a time, the band's gestures).
 //
 //     swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift \
-//       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift \
+//       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
+//       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift \
 //       Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift \
 //       RunesIOS/Cook/RecipeParser.swift RunesIOS/Cook/CookModel.swift Tests/CookTests.swift -o /private/tmp/runes-cook-tests && /private/tmp/runes-cook-tests
 import Foundation
@@ -260,6 +261,30 @@ struct CookTests {
         let older = try! JSONDecoder().decode(CookControls.self, from: Data(#"{"gestures":["next","swipe-right","previous","swipe-up","timer","double-tap-index"]}"#.utf8))
         precondition(older.gesture(for: .reset) == .holdMiddle && older.gesture(for: .timerDown) == .swipeDown)
         precondition(older.gesture(for: .timerUp) == nil && older.gesture(for: .previous) == .swipeUp, "A gesture already in use is left where it is")
+
+        // A command can take a combo. The engine Mappings uses decides when it was made.
+        controls = .standard
+        let twice = CommandTrigger(steps: [.swipeUp, .swipeUp].steps, intervalMs: 500)
+        controls.setTrigger(twice, for: .addMinute)
+        precondition(controls.trigger(for: .addMinute) == twice && controls.gesture(for: .addMinute) == nil && controls.command(for: .doubleTapMiddle) == nil)
+        precondition(!controls.reserved.contains(.doubleTapMiddle) && !controls.reserved.contains(.tapMiddle) && controls.reserved.contains(.swipeUp))
+        precondition(try! JSONDecoder().decode(CookControls.self, from: JSONEncoder().encode(controls)) == controls, "Combos round-trip")
+        var engine = MappingEngine(mappings: controls.mappings)
+        func made(_ events: [MappingEngine.Event]) -> [CookCommand] {
+            events.compactMap { if case .fire(let id, _) = $0 { controls.command(forMapping: id) } else { nil } }
+        }
+        precondition(made(engine.receive(.swipeRight, at: 0)) == [.next])
+        precondition(made(engine.receive(.swipeUp, at: 1)).isEmpty, "A swipe up waits for the combo that starts with it")
+        precondition(made(engine.tick(at: 1.2)).isEmpty && made(engine.tick(at: 1.6)) == [.timerUp], "and is the previous timer once the combo's time runs out")
+        precondition(made(engine.receive(.swipeUp, at: 3) + engine.receive(.swipeUp, at: 3.3) + engine.tick(at: 5)) == [.addMinute], "Twice in time adds a minute, and only that")
+        controls.setTrigger(twice, for: .reset)
+        precondition(controls.trigger(for: .reset) == twice && controls.gesture(for: .addMinute) == .holdMiddle, "Taking a combo swaps too")
+        precondition(!controls.usesMotion, "No motion step, no motion sensors")
+        controls.setTrigger(CommandTrigger(steps: [ComboStep(.holdIndex), .movement(.z), ComboStep(.releaseIndex)]), for: .next)
+        precondition(controls.usesMotion && controls.reserved.isSuperset(of: [.movement, .holdIndex, .releaseIndex]))
+        engine = MappingEngine(mappings: controls.mappings)
+        precondition(made(engine.receive(.holdIndex, at: 10) + engine.receive(.movement(.z), at: 14) + engine.receive(.releaseIndex, at: 15)) == [.next],
+                     "Held, so the movement has no time limit")
 
         print("Cook checks passed")
     }

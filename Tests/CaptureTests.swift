@@ -64,7 +64,7 @@ struct CaptureTests {
         var controls = CaptureControls()
         precondition(controls.trigger == .standard && controls.trigger.gesture == .holdIndex && !controls.trigger.isCombo)
         precondition(controls.trigger.holds && controls.trigger.release == .releaseIndex)
-        precondition(controls.reserved == [.holdIndex, .releaseIndex] && controls.sounds && !controls.headset)
+        precondition(controls.reserved == [.holdIndex, .releaseIndex] && controls.feedback == .sounds && !controls.headset)
         precondition(controls.trigger.start == "Hold your index finger" && controls.trigger.stop == "let go")
         precondition(CaptureTrigger.gesture(.holdMiddle).start == "Hold your middle finger" && CaptureTrigger.gesture(.holdMiddle).release == .releaseMiddle)
 
@@ -168,15 +168,15 @@ struct CaptureTests {
         precondition(band.log == ["start", "save"], "\(band.log)")
 
         // Settings survive being saved, and older ones still load.
-        controls.trigger = swipeHold; controls.headset = true; controls.sounds = false
+        controls.trigger = swipeHold; controls.headset = true; controls.feedback = .buzz
         let saved = try! JSONEncoder().encode(controls)
         precondition(try! JSONDecoder().decode(CaptureControls.self, from: saved) == controls)
         // Saved when only a hold could record.
         let legacy = try! JSONDecoder().decode(CaptureControls.self, from: Data(#"{"hold":"hold-middle","sounds":false}"#.utf8))
-        precondition(legacy.trigger == .gesture(.holdMiddle) && !legacy.sounds && !legacy.headset)
+        precondition(legacy.trigger == .gesture(.holdMiddle) && legacy.feedback == .off && !legacy.headset)
         // Damaged settings fall back rather than failing.
         let odd = try! JSONDecoder().decode(CaptureControls.self, from: Data(#"{"hold":"swipe-up","trigger":{"steps":[]}}"#.utf8))
-        precondition(odd.trigger == .standard && odd.sounds && !odd.headset)
+        precondition(odd.trigger == .standard && odd.feedback == .sounds && !odd.headset)
         precondition(try! JSONDecoder().decode(CaptureControls.self, from: Data("{}".utf8)) == CaptureControls())
 
         // Notes survive being saved.

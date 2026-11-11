@@ -114,24 +114,50 @@ enum WorkoutCommand: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// One gesture per command, the same for every workout.
+/// A gesture or a combo per command, the same for every workout.
 struct WorkoutControls: Codable, Hashable, Sendable {
-    var gestures: [WorkoutCommand: GestureKind]
+    var triggers: [WorkoutCommand: CommandTrigger]
 
     static let standard = WorkoutControls(gestures: [
         .start: .doubleTapIndex, .stop: .doubleTapMiddle, .repeatLast: .swipeLeft, .skip: .swipeRight,
     ])
-    /// Gestures a command may use. Releases and motion only exist inside combos.
-    static let choices = GestureKind.motions
+    /// Gestures a command may use on its own. Releases only exist inside combos.
+    static let choices = CommandTrigger.singleChoices
+    private static let mappingPrefix = "workout:"
 
-    func gesture(for command: WorkoutCommand) -> GestureKind? { gestures[command] }
+    init(triggers: [WorkoutCommand: CommandTrigger]) { self.triggers = triggers }
+    init(gestures: [WorkoutCommand: GestureKind]) { triggers = gestures.mapValues(CommandTrigger.gesture) }
+
+    func trigger(for command: WorkoutCommand) -> CommandTrigger? { triggers[command] }
+    /// The command's gesture, when it is a single one.
+    func gesture(for command: WorkoutCommand) -> GestureKind? { triggers[command]?.gesture }
     func command(for gesture: GestureKind) -> WorkoutCommand? {
-        WorkoutCommand.allCases.first { gestures[$0] == gesture }
+        WorkoutCommand.allCases.first { triggers[$0]?.gesture == gesture }
     }
-    /// Assigns a gesture; a command that already had it takes this command's old gesture.
-    mutating func set(_ gesture: GestureKind?, for command: WorkoutCommand) {
-        if let gesture, let other = self.command(for: gesture), other != command { gestures[other] = gestures[command] }
-        gestures[command] = gesture
+    /// Assigns a trigger; a command that already had it takes this command's old one.
+    mutating func setTrigger(_ trigger: CommandTrigger?, for command: WorkoutCommand) { triggers.assign(trigger, to: command) }
+    mutating func set(_ gesture: GestureKind?, for command: WorkoutCommand) { setTrigger(gesture.map(CommandTrigger.gesture), for: command) }
+
+    /// The gestures a running workout takes; mappings that use one are off until it ends.
+    var reserved: Set<GestureKind> { triggers.reserved }
+    /// The triggers as mappings, for the engine that decides which one was made.
+    var mappings: [Mapping] { triggers.mappings(prefix: Self.mappingPrefix) }
+    var usesMotion: Bool { triggers.usesMotion }
+    func command(forMapping id: String) -> WorkoutCommand? { triggers.command(forMapping: id, prefix: Self.mappingPrefix) }
+
+    private enum Keys: String, CodingKey { case gestures, triggers }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        if let saved = try c.decodeIfPresent([String: CommandTrigger].self, forKey: .triggers) {
+            triggers = Dictionary(saved: saved)
+        } else {
+            // Saved before a command could take a combo: one gesture each.
+            triggers = try c.decode([WorkoutCommand: GestureKind].self, forKey: .gestures).mapValues(CommandTrigger.gesture)
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(triggers.saved, forKey: .triggers)
     }
 }
 

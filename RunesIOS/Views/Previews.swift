@@ -37,6 +37,7 @@ enum PreviewFixtures {
             Mapping(id: "swipe-up", enabled: false, actions: [.openURL("music://")]),
             Mapping(id: "combo-a", enabled: true, actions: [.notify(title: "Runes", body: "Focus on")], steps: [ComboStep(.holdIndex), .rotation(.x, .right), ComboStep(.releaseIndex)], intervalMs: 750, name: "Focus"),
             Mapping(id: "combo-b", enabled: true, actions: [.copyText("On my way")], steps: [.tapMiddle, .doubleTapIndex, .swipeLeft].steps, intervalMs: 500),
+            Mapping(id: "combo-new", enabled: true, actions: [], steps: [], intervalMs: 750),
         ]).normalized()
         main.name = "Main"
         let work = MappingProfile(id: "work", name: "Work", icon: "work", mappings: []).normalized()
@@ -90,6 +91,18 @@ struct SnapshotGallery: View {
             MappingsScreen(store: PreviewFixtures.mappings)
         } else if name == "mapping-editor" {
             NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-a", title: "Focus") }
+        } else if name == "mapping-new" {
+            NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-new", title: "Combo 3") }
+        } else if name == "trigger-gesture" {
+            TriggerSheet(title: "Start set", caption: "Begins the set. Reps are counted for exercises the band can follow.",
+                         rules: .gesture(WorkoutControls.choices), steps: [ComboStep(.doubleTapIndex)],
+                         taken: [.doubleTapMiddle, .swipeLeft, .swipeRight], feed: PreviewFixtures.mappings) { _, _ in }
+        } else if name == "trigger-combo" || name == "trigger-empty" {
+            TriggerSheet(title: "Add a point", caption: "To the selected player.",
+                         rules: .gestureOrCombo(ScoreTrigger.singleChoices, next: ScoreTrigger.comboChoices, allowsNone: true),
+                         steps: name == "trigger-empty" ? [] : [.holdMiddle, .tapIndex, .doubleTapIndex, .releaseMiddle, .swipeRight].steps,
+                         taken: [.holdIndex, .swipeLeft, .swipeRight], feed: PreviewFixtures.mappings,
+                         note: { _ in "Next player uses this; they’ll swap." }) { _, _ in }
         } else if name == "applications" {
             ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false), scores: ScoreStore(preview: PreviewFixtures.score(7, 4)),
                                cook: PreviewFixtures.cook(), capture: PreviewFixtures.capture())
@@ -147,6 +160,19 @@ struct SnapshotGallery: View {
             NavigationStack { WorkoutEditor(store: PreviewFixtures.workouts(running: false), planID: WorkoutPlan.starterSplit[2].id) }
         } else if name == "workout-active" || name == "workout-waiting" {
             NavigationStack { ActiveWorkoutScreen(store: PreviewFixtures.workouts(running: true, counting: name == "workout-active")) }
+        } else if name == "workout-combo" {
+            // A combo on a command shows how it reads while a workout runs.
+            let store = PreviewFixtures.workouts(running: true)
+            let _ = store.setTrigger(CommandTrigger(steps: [.holdIndex, .swipeUp, .releaseIndex].steps), for: .stop)
+            NavigationStack { ActiveWorkoutScreen(store: store) }
+        } else if name == "cooking-combo" {
+            let store = PreviewFixtures.cook(step: 1, ringing: true)
+            let _ = store.setTrigger(CommandTrigger(steps: [.swipeUp, .swipeUp].steps), for: .addMinute)
+            NavigationStack { CookingScreen(store: store) }
+        } else if name == "cook-trigger-motion" {
+            TriggerSheet(title: "Next step", caption: "After the last step, finishes the recipe.", rules: CommandTrigger.rules,
+                         steps: [ComboStep(.holdIndex), .movement(.z), ComboStep(.releaseIndex)],
+                         note: { _ in "Rotation, movement and air gestures keep the band’s motion sensors on while you cook, which uses more battery." }) { _, _ in }
         } else if name == "advanced" {
             NavigationStack { AdvancedView(values: PreviewFixtures.advanced) }
         } else {

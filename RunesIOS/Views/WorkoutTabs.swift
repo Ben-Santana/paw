@@ -600,18 +600,18 @@ struct WorkoutSettingsScreen: View {
                 Button("Clear journal", role: .destructive, action: store.clearHistory)
             } message: { Text("Every logged workout is deleted. Your split stays.") }
             .sheet(item: $choosing) { command in
-                ChoiceSheet(title: command.title, options: [nil] + WorkoutControls.choices.map(Optional.some),
-                            selected: store.controls.gesture(for: command), caption: command.detail,
-                            label: { gesture in
-                                if let gesture {
-                                    GestureIcon(gesture: gesture, size: 22).frame(width: 28)
-                                    Text(gesture.name).font(.bodyText)
-                                } else {
-                                    Color.clear.frame(width: 28, height: 1)
-                                    Text("None").font(.bodyText).foregroundStyle(Color.muted)
-                                }
-                            },
-                            choose: { store.setGesture($0, for: command) })
+                let current = store.controls.trigger(for: command)
+                let others = WorkoutCommand.allCases.filter { $0 != command }
+                TriggerSheet(title: command.title, caption: command.detail, rules: CommandTrigger.rules,
+                             steps: current?.steps ?? [], intervalMs: current?.intervalMs ?? ComboRules.defaultTime,
+                             taken: Set(others.compactMap(store.controls.gesture)),
+                             feed: RunesIOSApp.snapshotName == nil ? .shared : nil,
+                             note: { steps in
+                    others.first { store.controls.trigger(for: $0)?.steps == steps }.map { "\($0.title) uses this; they’ll swap." }
+                        ?? (steps.first.map { $0.gesture.isMotion } == true ? "Exercises turn and move your wrist, so a combo that starts with rotation or movement will start often. Begin with a finger or swipe step." : nil)
+                }, save: { steps, interval in
+                    store.setTrigger(steps.isEmpty ? nil : CommandTrigger(steps: steps, intervalMs: interval), for: command)
+                })
             }
         }
         .tint(Color.ink)
@@ -620,26 +620,14 @@ struct WorkoutSettingsScreen: View {
     private var gestures: some View {
         Block {
             ForEach(WorkoutCommand.allCases, id: \.self) { command in
-                Button { choosing = command } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(command.title).font(.bodyText)
-                            Text(command.detail).font(.caption).foregroundStyle(Color.muted)
-                                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 8)
-                        GestureChip(gesture: store.controls.gesture(for: command))
-                    }
-                    .padding(.vertical, 14).contentShape(Rectangle())
-                }
-                .buttonStyle(PressRow())
-                .accessibilityHint("Chooses the gesture.")
+                TriggerRow(title: command.title, detail: command.detail,
+                           steps: store.controls.trigger(for: command)?.steps) { choosing = command }
                 if command != WorkoutCommand.allCases.last { Hairline(inset: 0) }
             }
         } header: {
             Heading("Gestures")
         } footer: {
-            Note("The same for every workout. While a workout runs, these gestures don’t run their mappings.")
+            Note("A gesture or a combo each, the same for every workout. While a workout runs, mappings that use these gestures are off.")
         }
     }
 }

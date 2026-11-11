@@ -112,18 +112,27 @@ struct CaptureTrigger: Codable, Hashable, Sendable {
     var stop: String { holds ? "let go" : "do it again" }
 }
 
-/// How Capture records: what starts it from the band, its sounds and its microphone.
+/// How Capture says it started or saved a note, so it can be used without looking.
+enum CaptureFeedback: String, Codable, CaseIterable, Sendable {
+    /// A tick when recording starts and a note when it is saved.
+    case sounds
+    /// The phone vibrates instead (once to start, twice when saved), and the Lock Screen
+    /// shows a notification for each.
+    case buzz
+    case off
+}
+
+/// How Capture records: what starts it from the band, how it signals and its microphone.
 struct CaptureControls: Codable, Hashable, Sendable {
     var trigger = CaptureTrigger.standard
-    /// A tick when recording starts and a note when it is saved, to do it without looking.
-    var sounds = true
+    var feedback = CaptureFeedback.sounds
     /// Record with the headphones' microphone instead of the phone's.
     var headset = false
 
     /// The gestures Capture takes while it can record; mappings that use them are off.
     var reserved: Set<GestureKind> { trigger.reserved }
 
-    private enum Keys: String, CodingKey { case trigger, hold, sounds, headset }
+    private enum Keys: String, CodingKey { case trigger, hold, sounds, feedback, headset }
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -133,13 +142,18 @@ struct CaptureControls: Codable, Hashable, Sendable {
             // Settings saved when only a hold could record.
             trigger = .gesture(hold)
         }
-        sounds = (try? c.decode(Bool.self, forKey: .sounds)) ?? true
+        if let saved = try? c.decode(CaptureFeedback.self, forKey: .feedback) {
+            feedback = saved
+        } else if let sounds = try? c.decode(Bool.self, forKey: .sounds) {
+            // Settings saved when the cues were only sounds or nothing.
+            feedback = sounds ? .sounds : .off
+        }
         headset = (try? c.decode(Bool.self, forKey: .headset)) ?? false
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(trigger, forKey: .trigger)
-        try c.encode(sounds, forKey: .sounds)
+        try c.encode(feedback, forKey: .feedback)
         try c.encode(headset, forKey: .headset)
     }
 }

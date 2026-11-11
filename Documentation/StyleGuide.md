@@ -124,7 +124,9 @@ one sentence, one hairline button.
 | `StepProgress`, `StepTicks`, `DurationChip` | CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
 | `TimerRing` | CookingView | A hairline circle that fills as a timer runs out |
 | `HairlineSwitch` | CaptureView | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
-| `ComboBuilder`, `TriggerChip` | ScoreSettingsView | Build a combo a step at a time; show a gesture or a combo's steps as a capsule |
+| `TriggerComposer` | TriggerComposer | The one way to set a gesture or build a combo: a track of step tiles (the selected one in ink, a dashed slot for the next, an ink line under steps made with a finger held) over a four-column pad of gesture keys. Inline on a page it opens the pad when a step is touched |
+| `TriggerSheet` | TriggerComposer | The composer over a draft, with Cancel and Save; `TriggerRules` says whether it takes one gesture, a combo or either |
+| `TriggerRow`, `TriggerChip` | TriggerComposer | A ledger row for something the band does, with its gesture or its combo's steps as a capsule |
 | `NoticeCard` | CaptureView | The issue card's look for any sentence and one action |
 | `Waveform` | CaptureView | A recording as hairline bars, inked up to the playback position |
 
@@ -139,7 +141,8 @@ Ledger row: 12–16 pt vertical padding, full-width hairline, `PressRow` style (
 ### Input, never in a system alert
 
 Text input, choices and numbers are edited in the app's own parts: a `FormSheet` for a name
-and its options, a `ChoiceSheet` for one-of-many, `HairlineSegments` for two to four options,
+and its options, a `ChoiceSheet` for one-of-many, a `TriggerSheet` for a gesture or combo (never a
+list or a menu of gestures), `HairlineSegments` for two to four options,
 `ChipRow` for a short scale, `NumberChip` for a number. System alerts are for confirmations
 only, and `Menu` only for a short list of verbs on an object (duplicate, delete), never for
 setting a value.

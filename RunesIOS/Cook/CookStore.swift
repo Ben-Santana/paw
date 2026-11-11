@@ -23,10 +23,21 @@ final class CookStore: ObservableObject {
     }
 
     @Published private(set) var recipes: [Recipe]
-    @Published private(set) var controls: CookControls
+    @Published private(set) var controls: CookControls { didSet { if !previewOnly { decider.configure(controls.mappings) }; motionChanged() } }
     /// Sounds for steps and timers while Runes is open. A finished timer always notifies.
     @Published private(set) var sounds: Bool
-    @Published private(set) var session: CookSession?
+    @Published private(set) var session: CookSession? { didSet { if (oldValue == nil) != (session == nil) { motionChanged() } } }
+
+    /// Told whether cooking needs the band's motion streams: only while a recipe is being
+    /// cooked and one of its combos has a rotation, movement or air step.
+    var onMotionDemand: ((Bool) -> Void)? { didSet { motionOn = motionWanted; onMotionDemand?(motionOn) } }
+    private var motionOn = false
+    private var motionWanted: Bool { session != nil && controls.usesMotion }
+    private func motionChanged() {
+        guard !previewOnly, motionWanted != motionOn else { return }
+        motionOn = motionWanted
+        onMotionDemand?(motionOn)
+    }
 
     /// Told which gestures cooking holds (none when nothing is being cooked).
     var onReserve: ((Set<GestureKind>) -> Void)? { didSet { onReserve?(reservedNow) } }
@@ -37,6 +48,8 @@ final class CookStore: ObservableObject {
     var onScreen = false
 
     private var previewOnly = false
+    /// Decides which command a band gesture completes, combos included.
+    private let decider = TriggerDecider()
     private var wake: Timer?
     private var ringTask: Task<Void, Never>?
     private var scheduled: Set<String> = []
@@ -53,6 +66,11 @@ final class CookStore: ObservableObject {
         sounds = saved.sounds ?? true
         session = saved.session
         scheduled = Set((saved.session?.timers ?? []).map { Self.notificationPrefix + $0.id })
+        decider.onFire = { [weak self] id in
+            guard let self, let command = self.controls.command(forMapping: id) else { return }
+            self.perform(command)
+        }
+        decider.configure(controls.mappings)
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.woke() }
         }
@@ -82,8 +100,8 @@ final class CookStore: ObservableObject {
         persist()
     }
 
-    func setGesture(_ gesture: GestureKind?, for command: CookCommand) {
-        controls.set(gesture, for: command)
+    func setTrigger(_ trigger: CommandTrigger?, for command: CookCommand) {
+        controls.setTrigger(trigger, for: command)
         persist()
         if !previewOnly { onReserve?(reservedNow) }
     }
@@ -140,8 +158,21 @@ final class CookStore: ObservableObject {
     /// Returns false to let mappings handle it.
     func consume(_ gesture: BandGesture) -> Bool {
         guard session != nil, let kind = GestureKind(gesture), reservedNow.contains(kind) else { return false }
-        if let command = controls.command(for: kind) { perform(command) }
+        decider.receive(kind)
         return true
+    }
+
+    /// Takes a rotation or movement from the band's motion while a recipe is being cooked
+    /// and one of its combos uses it. Returns false to let mappings have it.
+    func consume(_ step: ComboStep) -> Bool {
+        guard session != nil, reservedNow.contains(step.gesture) else { return false }
+        decider.receive(step)
+        return true
+    }
+
+    /// The band's orientation, for air steps in cooking's combos.
+    func orientation(_ q: [Double]) {
+        if motionOn { decider.orientation(q) }
     }
 
     /// The main button of one of the current step's timers: start, pause, start again, stop ringing.

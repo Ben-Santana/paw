@@ -28,7 +28,7 @@ struct ScoreSettingsScreen: View {
             .page()
             .navigationTitle("Score settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
-            .sheet(item: $editing) { action in TriggerSheet(store: store, action: action, playerName: playerName) }
+            .sheet(item: $editing) { action in ScoreTriggerSheet(store: store, action: action, playerName: playerName) }
             .sheet(item: $choosingSound) { slot in SoundSheet(store: store, slot: slot) }
         }
         .tint(Color.ink)
@@ -51,20 +51,7 @@ struct ScoreSettingsScreen: View {
     private func actionsBlock(_ heading: String, _ actions: [ScoreAction], note: String) -> some View {
         Block {
             ForEach(actions) { action in
-                Button { editing = action } label: {
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(title(action)).font(.bodyText)
-                            Text(action.detail).font(.caption).foregroundStyle(Color.muted)
-                                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 8)
-                        TriggerChip(trigger: store.controls.trigger(for: action))
-                    }
-                    .padding(.vertical, 14).contentShape(Rectangle())
-                }
-                .buttonStyle(PressRow())
-                .accessibilityHint("Chooses the gesture or combo.")
+                TriggerRow(title: title(action), detail: action.detail, steps: store.controls.trigger(for: action)?.steps) { editing = action }
                 if action != actions.last { Hairline(inset: 0) }
             }
         } header: {
@@ -159,81 +146,29 @@ enum SoundSlot: Hashable, Identifiable {
     }
 }
 
-/// A gesture, a combo's steps, or "None", as a hairline capsule.
-struct TriggerChip: View {
-    /// The trigger's steps; nil or empty reads "None".
-    let steps: [ComboStep]?
-    init(trigger: ScoreTrigger?) { steps = trigger?.steps }
-    init(steps: [ComboStep]?) { self.steps = steps }
-    var body: some View {
-        Group {
-            if let steps, steps.count == 1 {
-                GestureChip(gesture: steps[0].gesture)
-            } else if let steps, !steps.isEmpty {
-                HStack(spacing: 3) {
-                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                        if index > 0 { LucideIcon(.chevronRight, size: 9).foregroundStyle(Color.faint) }
-                        StepIcon(step: step, size: 15)
-                    }
-                }
-                .padding(.horizontal, 10).frame(minHeight: 30)
-                .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
-                .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
-            } else {
-                GestureChip(gesture: nil)
-            }
-        }
-        .animation(.standard, value: steps)
-    }
-}
-
 // MARK: Trigger
 
 /// Chooses one gesture, or builds a combo, for an action.
-private struct TriggerSheet: View {
+private struct ScoreTriggerSheet: View {
     @ObservedObject var store: ScoreStore
     let action: ScoreAction
     let playerName: (Int) -> String
-    @Environment(\.dismiss) private var dismiss
-
-    private enum Kind: String, CaseIterable { case gesture = "Gesture", combo = "Combo" }
-    @State private var kind = Kind.gesture
-    @State private var steps: [ComboStep] = []
-    @State private var interval = ComboRules.defaultTime
 
     private var current: ScoreTrigger? { store.controls.trigger(for: action) }
-    private var draft: ScoreTrigger { ScoreTrigger(steps: steps, intervalMs: interval) }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HairlineSegments(selection: $kind, options: Kind.allCases, title: \.rawValue)
-                    if kind == .gesture { gestureList } else { comboEditor }
-                    if kind == .combo, current != nil {
-                        Button("Set to None") { store.setTrigger(nil, for: action); dismiss() }.buttonStyle(.quiet)
-                    }
-                }
-                .padding(Metric.gutter)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .page()
-            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
-                if kind == .combo {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { store.setTrigger(draft, for: action); dismiss() }.font(.label).disabled(!draft.isValid)
-                    }
-                }
-            }
-            .onAppear {
-                if let current, current.isCombo { kind = .combo; steps = current.steps; interval = current.intervalMs }
-            }
-        }
-        .tint(Color.ink)
-        .presentationDetents([.large])
+        TriggerSheet(title: title, caption: action.detail,
+                     rules: .gestureOrCombo(ScoreTrigger.singleChoices, next: ScoreTrigger.comboChoices, allowsNone: true),
+                     steps: current?.steps ?? [], intervalMs: current?.intervalMs ?? ComboRules.defaultTime,
+                     taken: Set(ScoreAction.all.filter { $0 != action }.compactMap { store.controls.trigger(for: $0)?.gesture }),
+                     feed: band, note: { steps in owner(steps).map(ownerText) },
+                     save: { steps, interval in
+            store.setTrigger(steps.isEmpty ? nil : ScoreTrigger(steps: steps, intervalMs: interval), for: action)
+        })
     }
+
+    /// The band, except in previews and screenshots.
+    private var band: MappingStore? { RunesIOSApp.snapshotName == nil ? .shared : nil }
 
     private var title: String {
         switch action {
@@ -243,114 +178,16 @@ private struct TriggerSheet: View {
         }
     }
 
-    /// Who already uses a trigger; choosing it here swaps with them.
-    private func owner(_ trigger: ScoreTrigger) -> ScoreAction? {
-        ScoreAction.all.first { $0 != action && store.controls.trigger(for: $0)?.steps == trigger.steps }
+    /// Who already uses these steps; choosing them here swaps with them.
+    private func owner(_ steps: [ComboStep]) -> ScoreAction? {
+        ScoreAction.all.first { $0 != action && store.controls.trigger(for: $0)?.steps == steps }
     }
 
     private func ownerText(_ owner: ScoreAction) -> String {
         switch owner {
-        case .add(let i): "Adds to \(playerName(i)); they’ll swap"
-        case .take(let i): "Takes from \(playerName(i)); they’ll swap"
-        default: "\(owner.title); they’ll swap"
-        }
-    }
-
-    // MARK: One gesture
-
-    private var gestureList: some View {
-        // "None" is checked when nothing is set; a combo leaves every row unchecked.
-        let selected: GestureKind??
-        if let current { selected = current.gesture.map { .some($0) } ?? .none } else { selected = .some(nil) }
-        return ChoiceList(options: [nil] + ScoreTrigger.singleChoices.map(Optional.some), selected: selected, label: { gesture in
-            if let gesture {
-                GestureIcon(gesture: gesture, size: 22).frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(gesture.name).font(.bodyText)
-                    if let owner = owner(.gesture(gesture)) {
-                        Text(ownerText(owner)).font(.caption).foregroundStyle(Color.muted)
-                    }
-                }
-            } else {
-                Color.clear.frame(width: 28, height: 1)
-                Text("None").font(.bodyText).foregroundStyle(Color.muted)
-            }
-        }, choose: { gesture in
-            store.setTrigger(gesture.map(ScoreTrigger.gesture), for: action); dismiss()
-        })
-    }
-
-    // MARK: Combo
-
-    private var comboEditor: some View {
-        ComboBuilder(steps: $steps, interval: $interval, choices: ScoreTrigger.comboChoices,
-                     note: steps.isEmpty ? nil : owner(draft).map(ownerText))
-    }
-}
-
-/// Builds a combo a step at a time and sets the time allowed between steps. Shared by
-/// every app that lets a combo set something off (Score, Capture).
-struct ComboBuilder: View {
-    @Binding var steps: [ComboStep]
-    @Binding var interval: Int
-    /// The steps that may follow the ones chosen so far.
-    let choices: ([ComboStep]) -> [GestureKind]
-    /// A line under the steps once they are valid, such as who else uses them.
-    var note: String? = nil
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if steps.isEmpty {
-                Text("Add two to eight steps, made in this order.").font(.bodyText).foregroundStyle(Color.muted)
-            } else {
-                HStack(spacing: 6) {
-                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                        if index > 0 { LucideIcon(.chevronRight, size: 10).foregroundStyle(Color.faint) }
-                        VStack(spacing: 4) {
-                            StepIcon(step: step, size: 20)
-                            Text(step.shortName).font(.caption2).foregroundStyle(Color.muted).lineLimit(1)
-                        }
-                        .frame(minWidth: 34)
-                    }
-                }
-                .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
-            }
-            HStack(spacing: 12) {
-                Menu {
-                    let allowed = choices(steps)
-                    ForEach(["index", "middle"], id: \.self) { finger in
-                        Section(finger == "index" ? "Index finger" : "Middle finger") {
-                            ForEach(allowed.filter { $0.finger == finger }, id: \.self) { kind in
-                                Button(kind.shortName) { steps.append(ComboStep(kind)) }
-                            }
-                        }
-                    }
-                    Section("Swipe") {
-                        ForEach(allowed.filter { $0.finger == nil }, id: \.self) { kind in
-                            Button(kind.name) { steps.append(ComboStep(kind)) }
-                        }
-                    }
-                } label: {
-                    Label { Text("Add step") } icon: { LucideIcon(.plus, size: 16) }
-                }
-                .buttonStyle(.secondary)
-                .disabled(steps.count >= ComboRules.steps.upperBound)
-                Button { steps.removeLast() } label: { Label { Text("Undo step") } icon: { LucideIcon(.x, size: 16) } }
-                    .buttonStyle(.secondary).disabled(steps.isEmpty)
-            }
-            if !steps.isEmpty, let problem = ComboRules.problem(steps) {
-                Text(problem).font(.caption).foregroundStyle(Color.muted)
-            } else if let note {
-                Text(note).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .animation(.standard, value: steps)
-        VStack(alignment: .leading, spacing: 8) {
-            Heading("Time between steps")
-            ChipRow(selection: $interval, options: ComboRules.times) { ms in
-                ms < 1000 ? "\(ms) ms" : String(format: ms % 1000 == 0 ? "%.0f s" : "%.1f s", Double(ms) / 1000)
-            }
-            Note("While a finger is held there’s no time limit. A gesture that starts a combo waits until the combo finishes or runs out of time.")
+        case .add(let i): "Adds to \(playerName(i)); they’ll swap."
+        case .take(let i): "Takes from \(playerName(i)); they’ll swap."
+        default: "\(owner.title) uses this; they’ll swap."
         }
     }
 }

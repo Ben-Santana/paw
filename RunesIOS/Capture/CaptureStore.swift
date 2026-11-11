@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Foundation
 import UIKit
@@ -23,7 +24,7 @@ final class CaptureMeter: ObservableObject {
 /// background, iOS refuses to open it, so **pocket mode** opens it beforehand, while
 /// Runes is on screen, and leaves it open: sound is discarded as it arrives (all but the
 /// last second) until the trigger says to keep it. Pocket mode leaves the Live Activity
-/// alone; the cue sounds say what happened.
+/// alone; the cues (sounds, or buzzes and notifications) say what happened.
 @MainActor
 final class CaptureStore: ObservableObject {
     static let shared = CaptureStore()
@@ -194,7 +195,7 @@ final class CaptureStore: ObservableObject {
         notes.insert(note, at: 0)
         arrived = note.id
         persist()
-        cue(.saved)
+        cue(.saved, duration: clip.duration)
         transcribe(note.id)
     }
 
@@ -256,16 +257,46 @@ final class CaptureStore: ObservableObject {
         ticker?.invalidate(); ticker = nil
     }
 
-    /// With the microphone open the cue plays through its engine; otherwise the app's.
-    private func cue(_ cue: CaptureCue) {
-        guard controls.sounds else { return }
-        let (voice, pitch): (SoundVoice, Double) = switch cue {
-        case .start: (.pip, 659)
-        case .saved: (.resolve, 523)
-        case .discarded: (.tap, 196)
+    /// Says what happened the chosen way. A sound plays through the microphone's engine
+    /// when it is open, otherwise the app's.
+    private func cue(_ cue: CaptureCue, duration: Double = 0) {
+        switch controls.feedback {
+        case .off: return
+        case .buzz: buzz(cue, duration: duration)
+        case .sounds:
+            let (voice, pitch): (SoundVoice, Double) = switch cue {
+            case .start: (.pip, 659)
+            case .saved: (.resolve, 523)
+            case .discarded: (.tap, 196)
+            }
+            if !recorder.play(SoundSynth.render(voice, frequency: pitch, rate: 44_100), volume: 0.6) { onCue?(cue) }
         }
-        if !recorder.play(SoundSynth.render(voice, frequency: pitch, rate: 44_100), volume: 0.6) { onCue?(cue) }
     }
+
+    /// Vibrates once to start, twice when saved, three times when too short to keep.
+    /// Away from the screen a notification says the same; each replaces the last.
+    private func buzz(_ cue: CaptureCue, duration: Double) {
+        let count = switch cue { case .start: 1; case .saved: 2; case .discarded: 3 }
+        for index in 0..<count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55 * Double(index)) {
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            }
+        }
+        let center = UNUserNotificationCenter.current()
+        guard UIApplication.shared.applicationState != .active else {
+            center.removeDeliveredNotifications(withIdentifiers: [Self.cueNotification])
+            return
+        }
+        let content = UNMutableNotificationContent()
+        switch cue {
+        case .start: content.title = "Recording"; content.body = "Capture is keeping what you say."
+        case .saved: content.title = "Note saved"; content.body = CaptureRules.clock(duration)
+        case .discarded: content.title = "Too short to keep"; content.body = "Nothing was saved."
+        }
+        content.threadIdentifier = "capture"
+        center.add(UNNotificationRequest(identifier: Self.cueNotification, content: content, trigger: nil))
+    }
+    private static let cueNotification = "capture.cue"
 
     private func permitted() -> Bool {
         guard AVAudioApplication.shared.recordPermission == .granted else {
@@ -448,7 +479,13 @@ final class CaptureStore: ObservableObject {
         saveControls()
         if !previewOnly { onReserve?(reservedNow) }
     }
-    func setSounds(_ on: Bool) { controls.sounds = on; saveControls() }
+    func setFeedback(_ feedback: CaptureFeedback) {
+        controls.feedback = feedback
+        saveControls()
+        if feedback == .buzz {
+            Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) }
+        }
+    }
     func setHeadset(_ on: Bool) {
         guard on != controls.headset else { return }
         controls.headset = on

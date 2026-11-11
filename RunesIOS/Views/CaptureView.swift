@@ -5,8 +5,8 @@ import UIKit
 // Capture: make a gesture, say it, and it is written down. The screen is an inbox of
 // notes by day over one control, the circle: hold it to record, or tap it to record
 // until the next tap. The band's gesture (a hold by default; any gesture or combo in
-// settings) does the same. Pocket mode, at the top, keeps the microphone open so the
-// band can record with the phone locked. Drawn as a ledger, like Workouts.
+// settings) does the same. Pocket mode, in settings, keeps the microphone open so the
+// band can record with the phone locked; while it is on, a line at the top says so. Drawn as a ledger, like Workouts.
 
 struct CaptureScreen: View {
     @ObservedObject var store: CaptureStore
@@ -18,7 +18,7 @@ struct CaptureScreen: View {
     var body: some View {
         CaptureView(notes: store.notes, controls: store.controls, recordingSince: store.recordingSince, listening: store.listening,
                     releaseEnds: store.endRelease != nil, problem: store.problem, arrived: store.arrived, meter: store.meter,
-                    actions: CaptureActions(begin: store.begin, finish: store.finish, setListening: store.setListening,
+                    actions: CaptureActions(begin: store.begin, finish: store.finish,
                                             open: { path.append(.note($0)) }, delete: store.delete, resolve: resolve))
             .page()
             .navigationTitle("Capture").navigationBarTitleDisplayMode(.inline)
@@ -44,7 +44,6 @@ struct CaptureScreen: View {
 struct CaptureActions {
     var begin: () -> Void = {}
     var finish: () -> Void = {}
-    var setListening: (Bool) -> Void = { _ in }
     var open: (String) -> Void = { _ in }
     var delete: (String) -> Void = { _ in }
     var resolve: (CaptureStore.Problem) -> Void = { _ in }
@@ -67,8 +66,10 @@ struct CaptureView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    PocketRow(listening: listening, trigger: controls.trigger, set: actions.setListening)
-                    Hairline()
+                    if listening {
+                        PocketStatus(trigger: controls.trigger)
+                        Hairline()
+                    }
                     if let problem {
                         NoticeCard(sentence: problem.sentence, actionTitle: problem == .denied ? "Open Settings" : "OK") { actions.resolve(problem) }
                             .padding(.top, 16).transition(.opacity)
@@ -110,6 +111,24 @@ struct CaptureView: View {
     }
 }
 
+/// Shown over the notes while pocket mode is on, since the microphone is.
+private struct PocketStatus: View {
+    let trigger: CaptureTrigger
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                PulseDot()
+                Text("Pocket mode · listening").font(.label)
+            }
+            Text("\(trigger.start) anywhere to record, also with your phone locked. Turn it off in settings.")
+                .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Pocket mode: one switch, and exactly what it does.
 private struct PocketRow: View {
     let listening: Bool
@@ -121,7 +140,7 @@ private struct PocketRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     if listening { PulseDot().transition(.scale.combined(with: .opacity)) }
-                    Text(listening ? "Pocket mode · listening" : "Pocket mode").font(.label)
+                    Text(listening ? "Listening" : "Listen from your pocket").font(.label)
                 }
                 Text(listening ? "\(trigger.start) anywhere to record, also with your phone locked. The microphone is on; nothing is kept until you do."
                      : "Record from the band with your phone locked. The microphone stays on while this is.")
@@ -536,29 +555,27 @@ struct CaptureSettingsScreen: View {
     @State private var choosingTrigger = false
 
     private enum Microphone: String, CaseIterable { case phone = "iPhone", headset = "Headphones" }
-    private enum Sound: String, CaseIterable { case on = "On", off = "Off" }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 36) {
                     Block {
-                        Button { choosingTrigger = true } label: {
-                            HStack(alignment: .center, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Record a note").font(.bodyText)
-                                    Text(store.controls.trigger.holds ? "Records while you hold, and saves when you let go."
-                                         : "Starts recording. Make it again to save.")
-                                        .font(.caption).foregroundStyle(Color.muted)
-                                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                                }
-                                Spacer(minLength: 8)
-                                TriggerChip(steps: store.controls.trigger.steps).fixedSize()
-                            }
-                            .padding(.vertical, 14).contentShape(Rectangle())
+                        PocketRow(listening: store.listening, trigger: store.controls.trigger, set: store.setListening)
+                    } header: {
+                        Heading("Pocket mode")
+                    }
+                    if let problem = store.problem, problem != .interrupted {
+                        NoticeCard(sentence: problem.sentence, actionTitle: problem == .denied ? "Open Settings" : "OK") {
+                            if problem == .denied, let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            else { store.dismissProblem() }
                         }
-                        .buttonStyle(PressRow())
-                        .accessibilityHint("Chooses the gesture or combo.")
+                    }
+                    Block {
+                        TriggerRow(title: "Record a note",
+                                   detail: store.controls.trigger.holds ? "Records while you hold, and saves when you let go."
+                                                                        : "Starts recording. Make it again to save.",
+                                   steps: store.controls.trigger.steps) { choosingTrigger = true }
                     } header: {
                         Heading("Band gesture")
                     } footer: {
@@ -574,12 +591,14 @@ struct CaptureSettingsScreen: View {
                         Note("The iPhone’s microphone leaves music in your headphones at full quality. Headphones hear you better from a pocket, but wireless ones drop to call quality for as long as the microphone is on.")
                     }
                     Block {
-                        HairlineSegments(selection: Binding(get: { store.controls.sounds ? Sound.on : .off }, set: { store.setSounds($0 == .on) }),
-                                         options: Sound.allCases, title: \.rawValue)
+                        HairlineSegments(selection: Binding(get: { store.controls.feedback }, set: { store.setFeedback($0) }),
+                                         options: CaptureFeedback.allCases, title: \.label)
                     } header: {
-                        Heading("Sounds")
+                        Heading("Feedback")
                     } footer: {
-                        Note("A tick when recording starts and a note when it is saved, so you know without looking. In pocket mode these are the only sign: the Lock Screen stays as it is.")
+                        Note(store.controls.feedback == .buzz
+                             ? "The phone buzzes once when recording starts and twice when it is saved, three times if it was too short to keep. Away from Runes, a notification says the same."
+                             : "A tick when recording starts and a note when it is saved, so you know without looking. In pocket mode these are the only sign: the Lock Screen stays as it is.")
                     }
                     Note("Recordings and their words stay on this phone. They are put into words by iOS on the device, never sent anywhere.")
                     if !store.notes.isEmpty {
@@ -604,57 +623,17 @@ struct CaptureSettingsScreen: View {
 /// held records for as long as the hold; anything else starts and, made again, saves.
 struct CaptureTriggerSheet: View {
     @ObservedObject var store: CaptureStore
-    @Environment(\.dismiss) private var dismiss
-
-    private enum Kind: String, CaseIterable { case gesture = "Gesture", combo = "Combo" }
-    @State private var kind = Kind.gesture
-    @State private var steps: [ComboStep] = []
-    @State private var interval = ComboRules.defaultTime
-
-    private var current: CaptureTrigger { store.controls.trigger }
-    private var draft: CaptureTrigger { CaptureTrigger(steps: steps, intervalMs: interval) }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HairlineSegments(selection: $kind, options: Kind.allCases, title: \.rawValue)
-                    if kind == .gesture {
-                        ChoiceList(options: CaptureTrigger.singleChoices, selected: current.gesture, label: { gesture in
-                            GestureIcon(gesture: gesture, size: 22).frame(width: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(gesture.name).font(.bodyText)
-                                Text(gesture.isHold ? "Records while you hold" : "Again to save").font(.caption).foregroundStyle(Color.muted)
-                            }
-                        }, choose: { gesture in
-                            store.setTrigger(.gesture(gesture)); dismiss()
-                        })
-                    } else {
-                        ComboBuilder(steps: $steps, interval: $interval, choices: CaptureTrigger.comboChoices,
-                                     note: steps.isEmpty ? nil : draft.holds
-                                        ? "Ends with a hold: the note records while you hold and saves when you let go."
-                                        : "Make the combo to start recording, and again to save.")
-                    }
-                }
-                .padding(Metric.gutter)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .page()
-            .navigationTitle("Record a note").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.font(.label) }
-                if kind == .combo {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { store.setTrigger(draft); dismiss() }.font(.label).disabled(!draft.isValid)
-                    }
-                }
-            }
-            .onAppear {
-                if current.isCombo { kind = .combo; steps = current.steps; interval = current.intervalMs }
-            }
-        }
-        .tint(Color.ink)
-        .presentationDetents([.large])
+        let current = store.controls.trigger
+        TriggerSheet(title: "Record a note",
+                     rules: .gestureOrCombo(CaptureTrigger.singleChoices, next: CaptureTrigger.comboChoices, allowsNone: false),
+                     steps: current.steps, intervalMs: current.intervalMs,
+                     feed: RunesIOSApp.snapshotName == nil ? .shared : nil,
+                     note: { steps in
+            CaptureTrigger(steps: steps).holds ? "Ends with a hold: the note records while you hold and saves when you let go."
+                                               : "Make it to start recording, and again to save."
+        }, save: { steps, interval in store.setTrigger(CaptureTrigger(steps: steps, intervalMs: interval)) })
     }
 }
 
@@ -693,3 +672,13 @@ extension PreviewFixtures {
 #Preview("Capture · empty") { NavigationStack { CaptureScreen(store: PreviewFixtures.capture(empty: true), path: .constant([])) } }
 #Preview("Note") { NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: PreviewFixtures.notes[1].id) } }
 #endif
+
+private extension CaptureFeedback {
+    var label: String {
+        switch self {
+        case .sounds: "Sounds"
+        case .buzz: "Buzz"
+        case .off: "Off"
+        }
+    }
+}

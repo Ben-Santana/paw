@@ -446,24 +446,13 @@ struct CookSettingsScreen: View {
                     Block {
                         ForEach(Array(CookCommand.allCases.enumerated()), id: \.element) { index, command in
                             if index > 0 { Hairline(delay: 0.04 * Double(index)) }
-                            Button { choosing = command } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(command.title).font(.bodyText)
-                                        Text(command.detail).font(.caption).foregroundStyle(Color.muted)
-                                            .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    Spacer(minLength: 8)
-                                    GestureChip(gesture: store.controls.gesture(for: command))
-                                }
-                                .padding(.vertical, 14).contentShape(Rectangle())
-                            }
-                            .buttonStyle(PressRow())
+                            TriggerRow(title: command.title, detail: command.detail,
+                                       steps: store.controls.trigger(for: command)?.steps) { choosing = command }
                         }
                     } header: {
                         Heading("Gestures")
                     } footer: {
-                        Note("While you cook, these gestures turn the recipe’s pages and run its timers, and mappings that use them are off.")
+                        Note("A gesture or a combo each. While you cook, they turn the recipe’s pages and run its timers, and mappings that use their gestures are off.")
                     }
                     Block {
                         HairlineSegments(selection: Binding(get: { store.sounds ? Sound.on : .off }, set: { store.setSounds($0 == .on) }),
@@ -480,18 +469,18 @@ struct CookSettingsScreen: View {
             .navigationTitle("Cook settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(.label) } }
             .sheet(item: $choosing) { command in
-                ChoiceSheet(title: command.title, options: [nil] + CookControls.choices.map(Optional.some),
-                            selected: store.controls.gesture(for: command), caption: command.detail,
-                            label: { gesture in
-                                if let gesture {
-                                    GestureIcon(gesture: gesture, size: 22).frame(width: 28)
-                                    Text(gesture.name).font(.bodyText)
-                                } else {
-                                    Color.clear.frame(width: 28, height: 1)
-                                    Text("None").font(.bodyText).foregroundStyle(Color.muted)
-                                }
-                            },
-                            choose: { store.setGesture($0, for: command) })
+                let current = store.controls.trigger(for: command)
+                let others = CookCommand.allCases.filter { $0 != command }
+                TriggerSheet(title: command.title, caption: command.detail, rules: CommandTrigger.rules,
+                             steps: current?.steps ?? [], intervalMs: current?.intervalMs ?? ComboRules.defaultTime,
+                             taken: Set(others.compactMap(store.controls.gesture)),
+                             feed: RunesIOSApp.snapshotName == nil ? .shared : nil,
+                             note: { steps in
+                    others.first { store.controls.trigger(for: $0)?.steps == steps }.map { "\($0.title) uses this; they’ll swap." }
+                        ?? (CommandTrigger(steps: steps).usesMotion ? "Rotation, movement and air gestures keep the band’s motion sensors on while you cook, which uses more battery." : nil)
+                }, save: { steps, interval in
+                    store.setTrigger(steps.isEmpty ? nil : CommandTrigger(steps: steps, intervalMs: interval), for: command)
+                })
             }
         }
         .tint(Color.ink)

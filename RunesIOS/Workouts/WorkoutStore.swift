@@ -35,12 +35,20 @@ final class WorkoutStore: ObservableObject {
     }
 
     @Published private(set) var plans: [WorkoutPlan]
-    @Published private(set) var controls: WorkoutControls
+    @Published private(set) var controls: WorkoutControls { didSet { controlsChanged() } }
     @Published private(set) var sensitivity: RepSensitivity
     @Published private(set) var history: [WorkoutRecord]
     @Published private(set) var unit: WeightUnit
-    @Published private(set) var run: WorkoutRun?
+    @Published private(set) var run: WorkoutRun? {
+        didSet { if (oldValue == nil) != (run == nil), !previewOnly { onReserve?(reservedNow) } }
+    }
 
+    /// Told which gestures a running workout holds (none when nothing runs), so mappings
+    /// that use them turn off for as long as it does.
+    var onReserve: ((Set<GestureKind>) -> Void)? { didSet { onReserve?(reservedNow) } }
+    private var reservedNow: Set<GestureKind> { run == nil ? [] : controls.reserved }
+    /// Decides which command a band gesture completes, combos included.
+    private let decider = TriggerDecider()
     /// Told whether a workout needs the band's motion streams. Set by the session.
     var onMotionDemand: ((Bool) -> Void)? { didSet { onMotionDemand?(run != nil) } }
     /// Shows the workout on the Live Activity (nil restores band status); the string is an alert.
@@ -54,6 +62,17 @@ final class WorkoutStore: ObservableObject {
            let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
+        decider.onFire = { [weak self] id in
+            guard let self, self.run != nil, let command = self.controls.command(forMapping: id) else { return }
+            self.perform(command)
+        }
+        decider.configure(controls.mappings)
+    }
+
+    private func controlsChanged() {
+        guard !previewOnly else { return }
+        decider.configure(controls.mappings)
+        onReserve?(reservedNow)
     }
 
     #if DEBUG
@@ -80,7 +99,7 @@ final class WorkoutStore: ObservableObject {
         copy.items = copy.items.map { var item = $0; item.id = UUID().uuidString.lowercased(); return item }
         save(copy)
     }
-    func setGesture(_ gesture: GestureKind?, for command: WorkoutCommand) { controls.set(gesture, for: command); persist() }
+    func setTrigger(_ trigger: CommandTrigger?, for command: WorkoutCommand) { controls.setTrigger(trigger, for: command); persist() }
     func setSensitivity(_ value: RepSensitivity) { sensitivity = value; persist() }
     func setUnit(_ value: WeightUnit) { unit = value; persist() }
     func clearHistory() { history = []; persist() }
@@ -189,9 +208,22 @@ final class WorkoutStore: ObservableObject {
     /// Takes a band gesture that is one of the workout controls while a workout runs.
     /// Returns false to let mappings handle it.
     func consume(_ gesture: BandGesture) -> Bool {
-        guard run != nil, let kind = GestureKind(gesture), let command = controls.command(for: kind) else { return false }
-        perform(command)
+        guard run != nil, let kind = GestureKind(gesture), reservedNow.contains(kind) else { return false }
+        decider.receive(kind)
         return true
+    }
+
+    /// Takes a rotation or movement from the band's motion while a workout runs and one
+    /// of its combos uses it. Returns false to let mappings have it.
+    func consume(_ step: ComboStep) -> Bool {
+        guard run != nil, reservedNow.contains(step.gesture) else { return false }
+        decider.receive(step)
+        return true
+    }
+
+    /// The band's orientation, for air steps in a workout's combos.
+    func orientation(_ q: [Double]) {
+        if run != nil, controls.usesMotion { decider.orientation(q) }
     }
 
     /// A rep counted from the band's motion.
@@ -246,9 +278,9 @@ final class WorkoutStore: ObservableObject {
         switch run.phase {
         case .counting:
             let doing = slot.assumed ? "In progress" : "Counting"
-            status = controls.gesture(for: .stop).map { "\(doing) · \($0.name.lowercased()) to stop" } ?? doing
+            status = controls.trigger(for: .stop).map { "\(doing) · \($0.name.lowercased()) to stop" } ?? doing
         default:
-            status = controls.gesture(for: .start).map { "\($0.name) to start" } ?? "Waiting to start"
+            status = controls.trigger(for: .start).map { "\($0.name) to start" } ?? "Waiting to start"
         }
         let next = run.next.map { "Next: \($0.exercise.name), \($0.label.lowercased())" } ?? "Last set"
         return WorkoutActivityState(title: slot.exercise.name, detail: "\(slot.label) · \(Self.target(slot))",

@@ -169,7 +169,8 @@ struct CookingView: View {
 
     private struct Hint: Identifiable {
         let id: String
-        let gestures: [GestureKind]
+        /// Each command's gesture or combo; two when a hint covers a pair, such as either timer.
+        let triggers: [CommandTrigger]
         let word: String
     }
 
@@ -177,8 +178,8 @@ struct CookingView: View {
     private func hints(ringing: Bool, now: Date) -> [Hint] {
         var result: [Hint] = []
         func add(_ commands: [CookCommand], _ word: String) {
-            let gestures = commands.compactMap(controls.gesture)
-            if !gestures.isEmpty { result.append(Hint(id: commands[0].rawValue, gestures: gestures, word: word)) }
+            let triggers = commands.compactMap(controls.trigger)
+            if !triggers.isEmpty { result.append(Hint(id: commands[0].rawValue, triggers: triggers, word: word)) }
         }
         guard !session.finished else { add([.previous], "Back"); return result }
         add([.next], session.isLast ? "Finish" : "Next")
@@ -196,12 +197,12 @@ struct CookingView: View {
         return HStack(spacing: 13) {
             ForEach(items) { hint in
                 HStack(spacing: 5) {
-                    ForEach(hint.gestures, id: \.self) { GestureIcon(gesture: $0, size: 15) }
+                    ForEach(hint.triggers, id: \.self) { TriggerGlyphs(steps: $0.steps) }
                     Text(hint.word).font(.caption).lineLimit(1).fixedSize().padding(.leading, 1)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(hint.gestures.map(\.name).joined(separator: " or ")): \(hint.word)")
+                .accessibilityLabel("\(hint.triggers.map(\.name).joined(separator: " or ")): \(hint.word)")
             }
         }
         .foregroundStyle(Color.muted)

@@ -7,6 +7,8 @@ import SwiftUI
 struct StyleGuideGallery: View {
     @State private var segment = "Normal"
     @State private var toggle = true
+    @State private var steps = [GestureKind.holdIndex, .swipeUp, .releaseIndex].steps
+    @State private var interval = ComboRules.defaultTime
 
     var body: some View {
         NavigationStack {
@@ -19,6 +21,7 @@ struct StyleGuideGallery: View {
                     buttons
                     rows
                     ledger
+                    triggers
                     motion
                     icons
                 }
@@ -157,6 +160,22 @@ struct StyleGuideGallery: View {
                 .padding(.horizontal, Metric.inset).padding(.vertical, 10)
             }
             IssueCard(issue: .bandNotNearby) { _ in }
+        }
+    }
+
+    private var triggers: some View {
+        Block {
+            VStack(alignment: .leading, spacing: 0) {
+                TriggerRow(title: "Add a point", detail: "To the selected player.", steps: steps) {}
+                Hairline()
+                TriggerComposer(steps: $steps, interval: $interval,
+                                rules: .gestureOrCombo(GestureKind.motions, next: ScoreTrigger.comboChoices, allowsNone: true))
+                    .padding(.top, 16)
+            }
+        } header: {
+            Heading("Gestures and combos")
+        } footer: {
+            Note("One composer everywhere: touch a step to change it on the pad, the dashed slot to add one. The line marks steps made with a finger held.")
         }
     }
 

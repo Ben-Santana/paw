@@ -66,6 +66,8 @@ enum AudioHub {
         } else {
             category = .playback
         }
+        // Capture's buzz mode vibrates while recording, which iOS otherwise mutes.
+        if !session.allowHapticsAndSystemSoundsDuringRecording { try? session.setAllowHapticsAndSystemSoundsDuringRecording(true) }
         guard session.category != category || session.categoryOptions != options else { return }
         try session.setCategory(category, mode: .default, options: options)
     }

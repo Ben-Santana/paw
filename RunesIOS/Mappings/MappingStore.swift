@@ -16,7 +16,8 @@ final class MappingStore: ObservableObject {
     @Published private(set) var recent: [RecentGesture] = []
     /// Mapping that most recently ran, for a brief highlight.
     @Published private(set) var lastFired: (id: String, at: Date)?
-    /// While true (an editor is open), gestures are shown but no actions run.
+    /// While true (an editor is listening for steps), gestures are shown but no actions run,
+    /// and running apps don't get them either.
     @Published var paused = false
 
     struct RecentGesture: Identifiable, Equatable {

@@ -573,7 +573,7 @@ struct ActiveWorkoutView: View {
                 }
                 dial(slot).frame(width: 260, height: 260).padding(.vertical, 12)
                 HStack(spacing: 8) {
-                    if let gesture = statusGesture { GestureIcon.image(gesture, size: 15).foregroundStyle(Color.muted) }
+                    if let trigger = statusTrigger { TriggerGlyphs(steps: trigger.steps).foregroundStyle(Color.muted) }
                     Text(status).font(.caption).foregroundStyle(Color.muted).multilineTextAlignment(.center)
                 }
                 .contentTransition(.opacity)
@@ -607,18 +607,20 @@ struct ActiveWorkoutView: View {
         }
     }
 
-    private var statusGesture: GestureKind? {
+    /// The gesture or combo that moves the workout on from here.
+    private var statusTrigger: CommandTrigger? {
         switch run.phase {
-        case .counting: controls.gesture(for: .stop)
-        case .waiting: controls.gesture(for: .start)
+        case .counting: controls.trigger(for: .stop)
+        case .waiting: controls.trigger(for: .start)
         case .finished: nil
         }
     }
 
     private var status: String {
         switch run.phase {
-        case .counting: controls.gesture(for: .stop).map { "\($0.name) to stop" } ?? ""
-        case .waiting: controls.gesture(for: .start).map { "\($0.name) to start" } ?? ""
+        // A combo is already drawn step by step beside the words.
+        case .counting: statusTrigger.map { $0.isCombo ? "to stop" : "\($0.name) to stop" } ?? ""
+        case .waiting: statusTrigger.map { $0.isCombo ? "to start" : "\($0.name) to start" } ?? ""
         case .finished: ""
         }
     }
