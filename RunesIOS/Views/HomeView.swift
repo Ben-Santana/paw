@@ -205,9 +205,9 @@ private struct RingButtonStyle: ButtonStyle {
 
 /// Applications that can be pinned to the home screen.
 enum RunesApp: String, CaseIterable, Identifiable {
-    case workouts, score
+    case workouts, score, cook, capture
     var id: String { rawValue }
-    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score" } }
-    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2 } }
-    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score } }
+    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score"; case .cook: "Cook"; case .capture: "Capture" } }
+    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2; case .cook: .chefHat; case .capture: .mic } }
+    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score; case .cook: .cook; case .capture: .capture } }
 }

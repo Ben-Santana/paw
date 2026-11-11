@@ -185,7 +185,7 @@ private struct MappingRow: View {
         let text = mapping.actions.count == 1 ? first : "\(first) + \(mapping.actions.count - 1) more"
         if !mapping.enabled { return "Off · \(text)" }
         if !mapping.isLive { return "Needs attention · \(text)" }
-        if suspended { return "Off during the game · \(text)" }
+        if suspended { return "Off while an app uses it · \(text)" }
         return text
     }
 }
@@ -383,7 +383,11 @@ struct MappingEditor: View {
     }
 
     private func liveText(_ m: Mapping) -> String {
-        if m.isLive { return m.actions.contains { $0.kind.needsForeground } ? "Runs when you make it. Opening apps needs Runes on screen." : "Runs when you make it, also while your phone is locked." }
+        if m.isLive {
+            if m.actions.contains(where: { $0.kind.needsForeground }) { return "Runs when you make it. Opening apps needs Runes on screen." }
+            if m.actions.contains(.capture) { return "Runs when you make it. Recording with your phone locked needs Capture’s pocket mode." }
+            return "Runs when you make it, also while your phone is locked."
+        }
         if m.actions.isEmpty { return "Add an action first." }
         if let steps = m.steps, let problem = ComboRules.problem(steps) { return problem }
         if m.actions.contains(where: { $0.problem != nil }) { return "Finish the highlighted action." }
@@ -533,6 +537,8 @@ struct MappingEditor: View {
                                     Text(problem).font(.caption).foregroundStyle(Color.ink).underline()
                                 } else if action.kind.needsForeground {
                                     Text("Needs Runes on screen").font(.caption).foregroundStyle(Color.muted)
+                                } else if action == .capture {
+                                    Text(mapping.endingRelease == nil ? "Make it again to save" : "Let go to save").font(.caption).foregroundStyle(Color.muted)
                                 }
                             }
                             Spacer(minLength: 0)
@@ -741,6 +747,15 @@ private struct ActionEditor: View {
                 Text("Controls whatever Spotify is playing on any device, even while your phone is locked").font(.caption).foregroundStyle(Color.muted)
             }
             SpotifyAccountSection(client: spotify)
+        case .capture:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Starts a voice note in Capture. Make the gesture again and the note is saved and written down.").font(.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("If the gesture or combo ends with a finger held, the note records for as long as you hold and saves when you let go.")
+                    .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+                Text("With your phone locked or Runes in the background, turn on pocket mode in Capture first: iPhone doesn’t let apps start recording from the background.")
+                    .font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
+            }
         case .moveProfile(let direction):
             field("Direction", "Moves through profiles in the order shown on the Mappings page") {
                 Picker("Direction", selection: Binding(get: { direction }, set: { action = .moveProfile($0) })) {
@@ -978,6 +993,7 @@ extension MappingAction.Kind {
         case .changeProfile: .house
         case .moveProfile: .arrowDown
         case .spotify: .music
+        case .capture: .mic
         }
     }
 }

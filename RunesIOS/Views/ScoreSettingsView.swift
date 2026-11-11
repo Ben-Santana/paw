@@ -161,26 +161,29 @@ enum SoundSlot: Hashable, Identifiable {
 
 /// A gesture, a combo's steps, or "None", as a hairline capsule.
 struct TriggerChip: View {
-    let trigger: ScoreTrigger?
+    /// The trigger's steps; nil or empty reads "None".
+    let steps: [ComboStep]?
+    init(trigger: ScoreTrigger?) { steps = trigger?.steps }
+    init(steps: [ComboStep]?) { self.steps = steps }
     var body: some View {
         Group {
-            if let trigger, let gesture = trigger.gesture {
-                GestureChip(gesture: gesture)
-            } else if let trigger {
+            if let steps, steps.count == 1 {
+                GestureChip(gesture: steps[0].gesture)
+            } else if let steps, !steps.isEmpty {
                 HStack(spacing: 3) {
-                    ForEach(Array(trigger.steps.enumerated()), id: \.offset) { index, step in
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                         if index > 0 { LucideIcon(.chevronRight, size: 9).foregroundStyle(Color.faint) }
                         StepIcon(step: step, size: 15)
                     }
                 }
                 .padding(.horizontal, 10).frame(minHeight: 30)
                 .overlay(Capsule().strokeBorder(Color.rule, lineWidth: Metric.hairline))
-                .accessibilityElement().accessibilityLabel(trigger.name)
+                .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
             } else {
                 GestureChip(gesture: nil)
             }
         }
-        .animation(.standard, value: trigger)
+        .animation(.standard, value: steps)
     }
 }
 
@@ -279,7 +282,23 @@ private struct TriggerSheet: View {
 
     // MARK: Combo
 
-    @ViewBuilder private var comboEditor: some View {
+    private var comboEditor: some View {
+        ComboBuilder(steps: $steps, interval: $interval, choices: ScoreTrigger.comboChoices,
+                     note: steps.isEmpty ? nil : owner(draft).map(ownerText))
+    }
+}
+
+/// Builds a combo a step at a time and sets the time allowed between steps. Shared by
+/// every app that lets a combo set something off (Score, Capture).
+struct ComboBuilder: View {
+    @Binding var steps: [ComboStep]
+    @Binding var interval: Int
+    /// The steps that may follow the ones chosen so far.
+    let choices: ([ComboStep]) -> [GestureKind]
+    /// A line under the steps once they are valid, such as who else uses them.
+    var note: String? = nil
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if steps.isEmpty {
                 Text("Add two to eight steps, made in this order.").font(.bodyText).foregroundStyle(Color.muted)
@@ -294,11 +313,11 @@ private struct TriggerSheet: View {
                         .frame(minWidth: 34)
                     }
                 }
-                .accessibilityElement().accessibilityLabel(draft.name)
+                .accessibilityElement().accessibilityLabel(steps.map(\.name).joined(separator: ", then "))
             }
             HStack(spacing: 12) {
                 Menu {
-                    let allowed = ScoreTrigger.comboChoices(after: steps)
+                    let allowed = choices(steps)
                     ForEach(["index", "middle"], id: \.self) { finger in
                         Section(finger == "index" ? "Index finger" : "Middle finger") {
                             ForEach(allowed.filter { $0.finger == finger }, id: \.self) { kind in
@@ -321,8 +340,8 @@ private struct TriggerSheet: View {
             }
             if !steps.isEmpty, let problem = ComboRules.problem(steps) {
                 Text(problem).font(.caption).foregroundStyle(Color.muted)
-            } else if !steps.isEmpty, let owner = owner(draft) {
-                Text(ownerText(owner)).font(.caption).foregroundStyle(Color.muted)
+            } else if let note {
+                Text(note).font(.caption).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
         .animation(.standard, value: steps)

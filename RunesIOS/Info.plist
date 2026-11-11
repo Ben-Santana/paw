@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Runes scans the band identity QR code displayed on your Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Runes records a voice note while you hold a finger on your band or the record button.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Runes writes your voice notes down on this iPhone. Nothing is sent anywhere.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Runes connects to your Meta Neural Band to receive gestures, including during an active background session.</string>
 	<key>UIBackgroundModes</key>

@@ -32,6 +32,8 @@ final class SessionController: ObservableObject {
     private let holdHaptic = UIImpactFeedbackGenerator(style: .medium)
     private let swipeHaptic = UIImpactFeedbackGenerator(style: .soft)
     private var motionDemand = (mappings: false, workout: false, lab: false)
+    /// Gestures each running app has taken; mappings that use any of them are off meanwhile.
+    private var reservations: [RunesApp: Set<GestureKind>] = [:]
 
     private init() {
         let stream = AsyncStream<GestureEvent>.makeStream(bufferingPolicy: .bufferingNewest(200))
@@ -90,7 +92,34 @@ final class SessionController: ObservableObject {
             self.core.transport.perform { [weak core = self.core] in core?.setLocalEMG(on) }
         }
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
-        ScoreStore.shared.onReserve = { MappingStore.shared.reserve($0) }
+        ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
+        CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
+        CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
+        CookStore.shared.onCue = { cue in
+            let (voice, pitch): (SoundVoice, Double) = switch cue {
+            case .step: (.tick, 392)
+            case .start: (.pip, 523)
+            case .pause: (.soft, 330)
+            case .extend: (.pip, 659)
+            case .stop: (.soft, 392)
+            case .reset: (.tap, 262)
+            case .select: (.tick, 523)
+            case .ring: (.bell, 784)
+            case .finish: (.resolve, 392)
+            case .nothing: (.tap, 196)
+            }
+            ScoreAudio.shared.preview(voice, pitch: pitch, volume: 0.9)
+        }
+        CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
+        // Capture plays its own cues while its microphone is open; these are the rest.
+        CaptureStore.shared.onCue = { cue in
+            let (voice, pitch): (SoundVoice, Double) = switch cue {
+            case .start: (.pip, 659)
+            case .saved: (.resolve, 523)
+            case .discarded: (.tap, 196)
+            }
+            ScoreAudio.shared.preview(voice, pitch: pitch, volume: 0.6)
+        }
         ScoreStore.shared.onActivity = { [weak self] state, alert in self?.live.show(score: state, alert: alert) }
         ScoreStore.shared.onCue = { ScoreAudio.shared.play($0, with: ScoreStore.shared.controls.sounds) }
         ScoreStore.shared.onLive = { ScoreAudio.shared.setLive($0) }
@@ -107,6 +136,11 @@ final class SessionController: ObservableObject {
         let decided = CBManager.authorization != .notDetermined
         core.start(bluetooth: false)
         if decided || setupComplete { startBluetooth() }
+    }
+
+    private func reserve(_ gestures: Set<GestureKind>, for app: RunesApp) {
+        reservations[app] = gestures
+        MappingStore.shared.reserve(reservations.values.reduce(into: Set()) { $0.formUnion($1) })
     }
 
     private func pushMotionDemand() {
@@ -137,8 +171,10 @@ final class SessionController: ObservableObject {
     /// Runs gesture mappings, then one haptic per physical gesture; the end of a hold is silent.
     private func react(to gesture: BandGesture) {
         // Mappings and workouts run in the background too, so they come before the foreground check.
-        // A running workout's control gestures don't also run mappings, nor do a live game's.
-        if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
+        // A running app's control gestures don't also run mappings: a workout, a live game,
+        // a recipe being cooked, or Capture waiting for a hold.
+        if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
+           !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
         switch gesture.kind {
         case .tap, .doubleTap: tapHaptic.impactOccurred()

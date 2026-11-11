@@ -243,9 +243,11 @@ enum MappingAction: Codable, Hashable, Sendable {
     case changeProfile(String)
     case moveProfile(ProfileDirection)
     case spotify(SpotifyCommand)
+    /// Starts a Capture voice note, or saves the one being recorded.
+    case capture
 
     enum Kind: String, CaseIterable, Identifiable, Sendable {
-        case runShortcut, openURL, spotify, apiCall, notify, copyText, haptic, wait, changeProfile, moveProfile
+        case runShortcut, openURL, spotify, capture, apiCall, notify, copyText, haptic, wait, changeProfile, moveProfile
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -259,11 +261,12 @@ enum MappingAction: Codable, Hashable, Sendable {
             case .changeProfile: "Switch to profile"
             case .moveProfile: "Next or previous profile"
             case .spotify: "Control Spotify"
+            case .capture: "Record a Capture note"
             }
         }
         var group: String {
             switch self {
-            case .runShortcut, .openURL, .spotify: "Apps"
+            case .runShortcut, .openURL, .spotify, .capture: "Apps"
             case .apiCall, .notify, .copyText: "Send"
             case .haptic, .wait: "Feedback & timing"
             case .changeProfile, .moveProfile: "Profiles"
@@ -283,6 +286,7 @@ enum MappingAction: Codable, Hashable, Sendable {
             case .changeProfile: .changeProfile("")
             case .moveProfile: .moveProfile(.down)
             case .spotify: .spotify(.playPause)
+            case .capture: .capture
             }
         }
     }
@@ -299,6 +303,7 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .changeProfile: .changeProfile
         case .moveProfile: .moveProfile
         case .spotify: .spotify
+        case .capture: .capture
         }
     }
 
@@ -314,6 +319,7 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .changeProfile(let id): return "Switch to \(profiles.first { $0.id == id }?.name ?? "a profile")"
         case .moveProfile(let direction): return direction == .down ? "Next profile" : "Previous profile"
         case .spotify(let command): return "Spotify: \(command.title)"
+        case .capture: return "Capture: record or save a note"
         }
     }
 
@@ -340,7 +346,7 @@ enum MappingAction: Codable, Hashable, Sendable {
         case .copyText(let text): return text.isEmpty ? "Enter the text to copy." : nil
         case .wait(let ms): return (50...30_000).contains(ms) ? nil : "Wait 0.05–30 seconds."
         case .changeProfile(let id): return id.isEmpty ? "Choose a profile." : nil
-        case .haptic, .moveProfile, .spotify: return nil
+        case .haptic, .moveProfile, .spotify, .capture: return nil
         }
     }
 }
@@ -364,6 +370,8 @@ struct Mapping: Codable, Identifiable, Hashable, Sendable {
     /// Combos with rotation or movement steps need the band's motion streams.
     var usesMotion: Bool { steps?.contains { $0.gesture.isMotion || $0.gesture.isAir } ?? false }
     var hasActions: Bool { !actions.isEmpty }
+    /// The finger letting go, when the gesture or combo ends with that finger held.
+    var endingRelease: GestureKind? { (steps?.last?.gesture ?? motion)?.release }
     /// Whether the gesture, or any step of the combo, is one of `gestures`.
     func uses(_ gestures: Set<GestureKind>) -> Bool {
         if let steps { return steps.contains { gestures.contains($0.gesture) } }

@@ -16,6 +16,9 @@ struct BandSessionActivity: Widget {
             } else if let score = context.state.score {
                 ScoreLockScreen(score: score, connected: context.state.isConnected)
                     .padding().activityBackgroundTint(Color(.secondarySystemBackground))
+            } else if let cook = context.state.cook {
+                CookLockScreen(cook: cook)
+                    .padding().activityBackgroundTint(Color(.secondarySystemBackground))
             } else {
                 HStack(spacing: 14) {
                     ProfileMark(icon: context.state.profileIcon).frame(width: 28, height: 28)
@@ -70,6 +73,24 @@ struct BandSessionActivity: Widget {
                         .monospacedDigit().minimumScaleFactor(0.6)
                 }
             }
+            if let cook = context.state.cook {
+                // The step, and its timers: one as a number, several as circles.
+                return DynamicIsland {
+                    DynamicIslandExpandedRegion(.leading) {
+                        Text(cook.position).font(.headline).lineLimit(1).frame(maxHeight: .infinity)
+                    }
+                    DynamicIslandExpandedRegion(.trailing) {
+                        CookTimers(timers: cook.timers, number: 26, circle: 26).frame(maxHeight: .infinity)
+                    }
+                } compactLeading: {
+                    Text(cook.finished ? "Done" : "\(cook.step + 1)/\(cook.count)").monospacedDigit()
+                } compactTrailing: {
+                    CookTimers(timers: Array(cook.timers.prefix(3)), number: 15, circle: 15, spacing: 4).frame(maxWidth: 60)
+                } minimal: {
+                    if let timer = cook.timers.first { TimerCircle(timer: timer, size: 16) }
+                    else { Text(cook.finished ? "✓" : "\(cook.step + 1)").monospacedDigit() }
+                }
+            }
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) { ProfileMark(icon: context.state.profileIcon).frame(width: 24, height: 24) }
                 DynamicIslandExpandedRegion(.trailing) { BatteryRing(level: context.state.battery, size: 22) }
@@ -121,6 +142,88 @@ private struct WorkoutLockScreen: View {
                 }.font(.caption)
             }
         }
+    }
+}
+
+/// Which step, and its timers. One timer is its time, counting by itself; more than one
+/// are circles that fill as they run out.
+private struct CookLockScreen: View {
+    let cook: CookActivityState
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(cook.position).font(.headline)
+            Spacer(minLength: 12)
+            CookTimers(timers: cook.timers, number: 32, circle: 30)
+        }
+        .frame(minHeight: 36)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A recipe's timers: a lone one as a number, several as status circles.
+private struct CookTimers: View {
+    let timers: [CookActivityTimer]
+    /// Point size of the number, and width of each circle.
+    let number: CGFloat
+    let circle: CGFloat
+    var spacing: CGFloat = 10
+
+    var body: some View {
+        if timers.count == 1 {
+            TimerCount(timer: timers[0]).font(.system(size: number, weight: .medium).monospacedDigit())
+        } else if timers.count > 1 {
+            HStack(spacing: spacing) {
+                ForEach(timers) { TimerCircle(timer: $0, size: circle) }
+            }
+        }
+    }
+}
+
+/// A timer's time left, counted by the system between updates; it stands still, dimmed,
+/// while paused, and reads 0:00 once it is up.
+private struct TimerCount: View {
+    let timer: CookActivityTimer
+    var body: some View {
+        if let left = timer.remaining {
+            Text(left >= 3600 ? String(format: "%d:%02d:%02d", left / 3600, left % 3600 / 60, left % 60) : String(format: "%d:%02d", left / 60, left % 60))
+                .foregroundStyle(.secondary)
+        } else if timer.ringing || timer.end <= Date() {
+            Text("0:00")
+        } else {
+            Text(timerInterval: Date()...timer.end, countsDown: true).multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/// A timer as a circle: a ring that fills as the time runs out (drawn by the system, so
+/// it moves between updates), a dimmed ring standing still while paused, and a solid
+/// disc once the time is up.
+private struct TimerCircle: View {
+    let timer: CookActivityTimer
+    let size: CGFloat
+
+    private var line: CGFloat { max(2, size * 0.14) }
+    private var start: Date { timer.end.addingTimeInterval(-Double(max(1, timer.total))) }
+
+    var body: some View {
+        ZStack {
+            if let left = timer.remaining {
+                Circle().stroke(Color.white.opacity(0.25), lineWidth: line)
+                Circle().trim(from: 0, to: 1 - min(1, Double(left) / Double(max(1, timer.total))))
+                    .stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: line, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            } else if timer.ringing || timer.end <= Date() {
+                Circle().fill(Color.white)
+            } else {
+                ProgressView(timerInterval: start...timer.end, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+            }
+        }
+        .padding(line / 2)
+        .frame(width: size, height: size)
+        .accessibilityLabel(timer.remaining != nil ? "Timer paused" : timer.ringing ? "Timer done" : "Timer running")
     }
 }
 

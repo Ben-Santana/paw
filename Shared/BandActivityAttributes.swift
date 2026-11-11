@@ -16,8 +16,39 @@ struct BandActivityAttributes: ActivityAttributes {
         var workout: WorkoutActivityState? = nil
         /// Present while a game is being scored; shown when no workout is running.
         var score: ScoreActivityState? = nil
+        /// Present while a recipe is being cooked; shown when no workout or game is.
+        var cook: CookActivityState? = nil
     }
     let startedAt: Date
+}
+
+/// A recipe being cooked: which step, and its timers. Nothing else: the step's words
+/// are on the cooking screen. Timers carry their end time, so the Lock Screen counts by
+/// itself between updates.
+struct CookActivityState: Codable, Hashable {
+    /// "Step 3 of 8", or "Done".
+    var position: String
+    var step: Int
+    var count: Int
+    /// Counting, paused or up, the one with least time left first.
+    var timers: [CookActivityTimer] = []
+    var finished = false
+}
+
+struct CookActivityTimer: Codable, Hashable, Identifiable {
+    var id: String
+    var end: Date
+    /// Its whole length in seconds, so a circle can show how far through it is.
+    var total: Int = 0
+    var ringing = false
+    /// Seconds left while paused; the time then stands still.
+    var remaining: Int? = nil
+}
+
+/// A title and a line for a Live Activity alert, which lights the Lock Screen with a sound.
+struct LiveAlert: Hashable, Sendable {
+    var title: String
+    var body: String
 }
 
 /// The players of a game being scored from the band.

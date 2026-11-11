@@ -15,7 +15,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                              willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner]
+        // The cooking screen shows and sounds a finished timer itself.
+        if CookStore.isTimer(notification.request.identifier), await CookStore.shared.onScreen { return [] }
+        return [.banner]
     }
     /// Runes is a portrait app; one screen (Score) turns. See `OrientationLock`.
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {

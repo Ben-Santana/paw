@@ -13,6 +13,11 @@ enum AppRoute: Hashable {
     case editWorkout(String)
     case activeWorkout
     case score
+    case cook
+    case recipe(String)
+    case cooking
+    case capture
+    case note(String)
 }
 
 // MARK: Applications
@@ -22,11 +27,16 @@ struct ApplicationsScreen: View {
     var done: () -> Void = {}
     @ObservedObject private var pins = PinStore.shared
     @ObservedObject private var scores: ScoreStore
+    @ObservedObject private var cook: CookStore
+    @ObservedObject private var capture: CaptureStore
     @State private var path: [AppRoute]
 
-    init(workouts: WorkoutStore, scores: ScoreStore? = nil, initialRoute: AppRoute? = nil, done: @escaping () -> Void = {}) {
+    init(workouts: WorkoutStore, scores: ScoreStore? = nil, cook: CookStore? = nil, capture: CaptureStore? = nil,
+         initialRoute: AppRoute? = nil, done: @escaping () -> Void = {}) {
         self.workouts = workouts
         self.scores = scores ?? .shared
+        self.cook = cook ?? .shared
+        self.capture = capture ?? .shared
         self.done = done
         _path = State(initialValue: initialRoute.map { [$0] } ?? [])
     }
@@ -56,6 +66,11 @@ struct ApplicationsScreen: View {
                 case .editWorkout(let id): WorkoutEditor(store: workouts, planID: id)
                 case .activeWorkout: ActiveWorkoutScreen(store: workouts)
                 case .score: ScoreScreen(store: scores)
+                case .cook: CookScreen(store: cook, path: $path)
+                case .recipe(let id): RecipeScreen(store: cook, recipeID: id, path: $path)
+                case .cooking: CookingScreen(store: cook)
+                case .capture: CaptureScreen(store: capture, path: $path)
+                case .note(let id): NoteScreen(store: capture, noteID: id)
                 }
             }
         }
@@ -66,6 +81,19 @@ struct ApplicationsScreen: View {
         switch app {
         case .workouts: return workouts.run.map { "\($0.name) in progress" } ?? "Your split, a journal, and reps from your band"
         case .score: return scores.game.live ? scores.game.summary : "Keep score from your band, without looking"
+        case .cook: return cook.session.map { "\($0.recipe.title) · \($0.position.lowercased())" } ?? "Recipes a step at a time, with hands-free timers"
+        case .capture:
+            if capture.isRecording { return "Recording" }
+            return capture.listening ? "Listening from your pocket" : "Make a gesture, say it, and it’s written down"
+        }
+    }
+
+    private func running(_ app: RunesApp) -> Bool {
+        switch app {
+        case .workouts: workouts.run != nil
+        case .score: scores.game.live
+        case .cook: cook.session != nil
+        case .capture: capture.listening || capture.isRecording
         }
     }
 
@@ -74,7 +102,7 @@ struct ApplicationsScreen: View {
             HStack(spacing: 14) {
                 ZStack {
                     Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
-                    if app == .workouts ? workouts.run != nil : scores.game.live { OrbitDot(radius: 22) }
+                    if running(app) { OrbitDot(radius: 22) }
                     LucideIcon(app.icon, size: 18)
                 }
                 .frame(width: 44, height: 44)
@@ -733,7 +761,7 @@ private struct BreathingCircle: View {
 }
 
 /// A check drawn in a single hairline stroke inside a drawn circle.
-private struct FinishedMark: View {
+struct FinishedMark: View {
     @State private var drawn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {

@@ -121,6 +121,12 @@ one sentence, one hairline button.
 | `LucideIcon` | Icons | Sizes 20 (toolbar), 18 (row object), 16 (trailing/inline), 14 (within chip) |
 | `HairlineRing` | HairlineRing | The product's face; never scaled below 150 pt wide |
 | `Hairline`, `Heading`, `Note`, `AddRow`, `GestureChip`, `HairlineSegments`, `RoundAction`, `CapsuleAction` | WorkoutsView | Ledger parts |
+| `StepProgress`, `StepTicks`, `DurationChip` | CookView | A recipe's steps as hairline segments and ticks; a step's time as a quiet chip |
+| `TimerRing` | CookingView | A hairline circle that fills as a timer runs out |
+| `HairlineSwitch` | CaptureView | A switch in ink and hairline (outline and open knob off, filled on); reads in both appearances |
+| `ComboBuilder`, `TriggerChip` | ScoreSettingsView | Build a combo a step at a time; show a gesture or a combo's steps as a capsule |
+| `NoticeCard` | CaptureView | The issue card's look for any sentence and one action |
+| `Waveform` | CaptureView | A recording as hairline bars, inked up to the playback position |
 
 ### Row anatomy
 

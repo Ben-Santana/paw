@@ -91,7 +91,36 @@ struct SnapshotGallery: View {
         } else if name == "mapping-editor" {
             NavigationStack { MappingEditor(store: PreviewFixtures.mappings, mappingID: "combo-a", title: "Focus") }
         } else if name == "applications" {
-            ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false), scores: ScoreStore(preview: PreviewFixtures.score(7, 4)))
+            ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false), scores: ScoreStore(preview: PreviewFixtures.score(7, 4)),
+                               cook: PreviewFixtures.cook(), capture: PreviewFixtures.capture())
+        } else if name == "cook" {
+            NavigationStack { CookScreen(store: PreviewFixtures.cook(), path: .constant([])) }
+        } else if name == "recipe" {
+            NavigationStack { RecipeScreen(store: PreviewFixtures.cook(), recipeID: Recipe.starter.id, path: .constant([])) }
+        } else if name == "recipe-editor" || name == "recipe-new" {
+            RecipeEditor(store: PreviewFixtures.cook(), recipe: name == "recipe-editor" ? .starter : nil) { _ in }
+        } else if ["cooking", "cooking-first", "cooking-ringing", "cooking-done"].contains(name) {
+            let store = name == "cooking-first" ? PreviewFixtures.cook(step: 0) : name == "cooking-ringing" ? PreviewFixtures.cook(step: 1, ringing: true)
+                : PreviewFixtures.cook(finished: name == "cooking-done")
+            NavigationStack { CookingScreen(store: store) }
+        } else if name == "cooking-two" || name == "cooking-two-ringing" {
+            NavigationStack { CookingScreen(store: PreviewFixtures.cookTwo(ringing: name == "cooking-two-ringing")) }
+        } else if name == "cook-ingredients" {
+            IngredientsSheet(session: PreviewFixtures.cook().session!) { _ in }
+        } else if name == "cook-settings" {
+            CookSettingsScreen(store: PreviewFixtures.cook())
+        } else if ["capture", "capture-recording", "capture-empty", "capture-pocket"].contains(name) {
+            let store = PreviewFixtures.capture(recording: name == "capture-recording", listening: name == "capture-recording" || name == "capture-pocket",
+                                                empty: name == "capture-empty")
+            NavigationStack { CaptureScreen(store: store, path: .constant([])) }
+        } else if name == "capture-note" {
+            NavigationStack { NoteScreen(store: PreviewFixtures.capture(), noteID: "note-34") }
+        } else if name == "capture-settings" {
+            CaptureSettingsScreen(store: PreviewFixtures.capture())
+        } else if name == "capture-trigger" {
+            CaptureTriggerSheet(store: PreviewFixtures.capture())
+        } else if name == "capture-combo" {
+            NavigationStack { CaptureScreen(store: PreviewFixtures.capture(empty: true, trigger: CaptureTrigger(steps: [ComboStep(.swipeUp), ComboStep(.doubleTapIndex)])), path: .constant([])) }
         } else if ["score", "score-idle", "score-three", "score-all"].contains(name) {
             // One player full screen while a game is live; "score-all" and an idle game show everyone.
             let game = name == "score" ? PreviewFixtures.score(7, 4) : name == "score-idle" ? PreviewFixtures.score(0, 0, live: false)
@@ -141,9 +170,9 @@ struct SnapshotGallery: View {
     VStack { ForEach([BandPhase.notSetUp, .connecting, .connected, .attention], id: \.title) { HairlineRing(phase: $0).frame(height: 150) } }.page()
 }
 #Preview("Large type") { HomeView(status: PreviewFixtures.home[2].1).dynamicTypeSize(.accessibility2) }
-#endif
 #Preview("Settings – Mac paired") {
     SettingsView(values: SettingsValues(battery: 82, hand: .left,
                                         macs: [MacLinks.Mac(id: UUID(), name: "Studio", state: .connected),
                                                MacLinks.Mac(id: UUID(), name: "MacBook Air", state: .notNearby)])) { EmptyView() }
 }
+#endif

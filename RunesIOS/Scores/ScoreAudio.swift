@@ -8,6 +8,8 @@ import UIKit
 /// running with the screen off and each cue plays the moment a band gesture arrives.
 /// The session mixes with other audio, so music keeps playing underneath, and it uses
 /// the playback category, so cues still sound with the ring/silent switch on silent.
+/// The session itself is shared (`AudioHub`): Cook's bell and Capture's cues play
+/// through `preview` here, and Capture may hold the session open for its microphone.
 ///
 /// Each change plays a sound chosen in Score settings from the Mac's library (`SoundVoice`):
 /// one for a point added, one for a point taken, and one per player when they are selected.
@@ -102,9 +104,7 @@ final class ScoreAudio {
     private func ensureRunning(force: Bool = false) {
         guard wanted || force, !engine.isRunning else { return }
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
+            try AudioHub.activate("score")
             try engine.start()
             silence.scheduleBuffer(silentBuffer(), at: nil, options: .loops)
             silence.play()
@@ -117,7 +117,7 @@ final class ScoreAudio {
 
     private func stop() {
         silence.stop(); cues.stop(); engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        AudioHub.release("score")
     }
 
     private func attach() {

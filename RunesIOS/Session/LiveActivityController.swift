@@ -13,6 +13,8 @@ final class LiveActivityController {
     private var profileIcon: String?
     private var workout: WorkoutActivityState?
     private var score: ScoreActivityState?
+    private var cook: CookActivityState?
+    private var bandWanted = false
     private var scoreTask: Task<Void, Never>?
     private var updateTask: Task<Void, Never>?
     private var workoutTask: Task<Void, Never>?
@@ -33,8 +35,10 @@ final class LiveActivityController {
     }
 
     func update(_ snapshot: SessionSnapshot) {
+        bandWanted = snapshot.wantsConnection
         guard let activity else { return }
-        guard snapshot.wantsConnection else { end(); return }
+        // A recipe's timers stay on the Lock Screen without the band.
+        guard snapshot.wantsConnection || cook != nil else { end(); return }
         let phase = BandStatus(snapshot, setupComplete: true, relayStatus: nil).phase
         guard phase != lastPhase || snapshot.battery != battery else { return }
         lastPhase = phase; battery = snapshot.battery
@@ -103,11 +107,32 @@ final class LiveActivityController {
         }
     }
 
+    /// Shows the recipe being cooked, or the band status again with nil.
+    func show(cook state: CookActivityState?, alert: LiveAlert? = nil) { cook = state; push(alert) }
+
+    /// Sends the current state; `alert` lights the Lock Screen with a sound.
+    private func push(_ alert: LiveAlert?) {
+        if activity == nil, cook != nil { start() }
+        guard let activity else { return }
+        // Nothing left to show and no band session to report: take it down.
+        if cook == nil, workout == nil, score == nil, !bandWanted { end(); return }
+        let phase = lastPhase ?? .connected
+        Task {
+            if let alert {
+                await activity.update(content(phase), alertConfiguration: AlertConfiguration(title: "\(alert.title)", body: "\(alert.body)", sound: .default))
+            } else {
+                await activity.update(content(phase))
+            }
+        }
+    }
+
     private func content(_ phase: BandPhase) -> ActivityContent<BandActivityAttributes.ContentState> {
         // A workout or a game can sit unchanged for a while; keep it from going stale too soon.
-        ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected,
-                                       profileIcon: profileIcon, workout: workout, score: score),
-                        staleDate: Date().addingTimeInterval(workout == nil && score == nil ? 60 : 15 * 60))
+        // A simmering pot sits for longer still.
+        let quiet: TimeInterval = cook != nil ? 4 * 3600 : workout != nil || score != nil ? 15 * 60 : 60
+        return ActivityContent(state: .init(status: phase.title, isConnected: phase == .connected, battery: battery, macConnected: macConnected,
+                                            profileIcon: profileIcon, workout: workout, score: score, cook: cook),
+                               staleDate: Date().addingTimeInterval(quiet))
     }
 
     func end() {

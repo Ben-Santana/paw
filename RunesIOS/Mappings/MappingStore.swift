@@ -200,7 +200,7 @@ final class MappingStore: ObservableObject {
                 guard let mapping = active.mappings.first(where: { $0.id == id }) else { continue }
                 recent = recent.map { r in var r = r; if inputs.contains(r.id) { r.ranMapping = true }; return r }
                 lastFired = (id, Date())
-                if !paused { run(mapping.actions) }
+                if !paused { run(mapping.actions, from: mapping) }
             case .comboFailed:
                 break
             }
@@ -210,15 +210,16 @@ final class MappingStore: ObservableObject {
     // MARK: Actions
 
     /// Runs linked actions in order. Each waits for the previous one (an API call, a wait).
-    func run(_ actions: [MappingAction]) {
+    /// `mapping` is the gesture or combo that set them off, when one did.
+    func run(_ actions: [MappingAction], from mapping: Mapping? = nil) {
         Task { @MainActor in
-            for action in actions { await perform(action) }
+            for action in actions { await perform(action, from: mapping) }
         }
     }
 
     private var foreground: Bool { UIApplication.shared.applicationState == .active }
 
-    private func perform(_ action: MappingAction) async {
+    private func perform(_ action: MappingAction, from mapping: Mapping?) async {
         if action.kind.needsForeground && !foreground { return }
         switch action {
         case .openURL(let text):
@@ -266,6 +267,9 @@ final class MappingStore: ObservableObject {
                 try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "spotify-error", content: content, trigger: nil))
             }
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        case .capture:
+            // A gesture that ends with a finger held records until that finger lets go.
+            CaptureStore.shared.toggle(endingOn: mapping?.endingRelease)
         case .moveProfile(let direction):
             guard let i = library.profiles.firstIndex(where: { $0.id == library.activeID }) else { return }
             let next = max(0, min(library.profiles.count - 1, i + (direction == .up ? -1 : 1)))
