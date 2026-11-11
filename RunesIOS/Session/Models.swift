@@ -17,7 +17,11 @@ struct SessionSnapshot: Sendable {
     var identityAccount: UUID?
     var identityFingerprint: String?
     var battery: Int?
-    var hand: Handedness?
+    var handSetting = HandSetting()
+    var hand: Handedness? {
+        get { handSetting.confirmed }
+        set { handSetting.confirmed = newValue }
+    }
     var bluetoothReady = false
     /// The latest physical gesture, one per tap, double tap, hold or swipe.
     var lastGesture: BandGesture?
@@ -212,7 +216,48 @@ struct SequenceTracker: Sendable {
     }
 }
 
-enum Handedness: String, Sendable { case left, right }
+enum Handedness: String, Sendable {
+    case left, right
+    var configuration: Data { PB.field(10, self == .left ? 1 : 0) }
+    static func read(_ payload: Data) -> Self? {
+        guard let config = try? Fields(Fields(payload).bytes(6)), let value = try? config.integer(10), value <= 1 else { return nil }
+        return value == 1 ? .left : .right
+    }
+}
+
+struct HandSetting: Sendable {
+    enum Request: Equatable, Sendable { case read, write(Handedness), verify(Handedness) }
+    var confirmed: Handedness?
+    private(set) var pending: Request?
+    private(set) var error: String?
+    var busy: Bool { pending != nil }
+
+    mutating func read() -> Bool {
+        guard !busy else { return false }
+        pending = .read; confirmed = nil; error = nil; return true
+    }
+    mutating func change(to hand: Handedness) -> Bool {
+        guard !busy else { return false }
+        pending = .write(hand); confirmed = nil; error = nil; return true
+    }
+    mutating func wrote() -> Bool {
+        guard case .write(let hand) = pending else { return false }
+        pending = .verify(hand); return true
+    }
+    mutating func received(_ hand: Handedness?) -> Bool {
+        switch pending { case .read, .verify: break; default: return false }
+        guard let hand else { fail("The band did not report a valid wrist setting."); return false }
+        if case .verify(let requested) = pending, requested != hand {
+            error = "The band kept its \(hand.rawValue) wrist setting. Try again."
+        } else { error = nil }
+        confirmed = hand; pending = nil; return true
+    }
+    mutating func fail(_ message: String) { confirmed = nil; pending = nil; error = message }
+    mutating func cancel() {
+        if busy { confirmed = nil; error = "The wrist setting was not confirmed. Reconnect to check it." }
+        pending = nil
+    }
+}
 
 /// Everything the interface may say about a problem: one plain sentence and one action.
 /// Protocol detail never appears here; it goes to the journal.

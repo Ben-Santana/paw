@@ -11,8 +11,12 @@ final class BandProtocol {
         case emg(values: [UInt16], sequence: UInt64, timestamp: UInt64)
         /// The band would not provide EMG. The connection stays up; EMG is simply left off.
         case emgUnavailable(String)
+        case handUnavailable(String)
     }
-    private struct Pending { let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data? }
+    private struct Pending {
+        let operation: String; let id: UInt64; let deadline: TimeInterval; let flags: Data?
+        var isHandRequest: Bool { operation == "read_hand" || operation == "set_hand" }
+    }
     private var identity: BandIdentity?
     private let ceremony: OwnershipCeremony?
     private let ephemeral = P256.KeyAgreement.PrivateKey()
@@ -37,11 +41,18 @@ final class BandProtocol {
         stage = "encryption"; deadline = now + 15
         return try frame(0x8001, [0x81000005, 0x02000001], PB.field(1, point) + PB.field(2, challenge) + PB.field(3, 0) + PB.field(4, 31) + PB.field(7, 16))
     }
-    func tick(now: TimeInterval) throws {
+    @discardableResult
+    func tick(now: TimeInterval) throws -> [Signal] {
         if now >= deadline {
             throw BandError.timeout(stage: stage)
         }
-        if let p = pending.values.first(where: { now >= $0.deadline }) { throw BandError.timeout(stage: p.operation) }
+        var signals: [Signal] = []
+        for (channel, request) in pending where now >= request.deadline {
+            guard request.isHandRequest else { throw BandError.timeout(stage: request.operation) }
+            pending[channel] = nil
+            signals.append(.handUnavailable("The wrist setting timed out. Try again."))
+        }
+        return signals
     }
     func encrypt(_ data: Data) throws -> Data {
         guard let tx else { throw BandError.wire("Encryption is not established.") }
@@ -63,8 +74,8 @@ final class BandProtocol {
         return try encrypt(frame(channel | 0x8000, words, PB.field(1, nextID) + PB.field(field, payload)))
     }
     func feed(_ input: Data, now: TimeInterval) throws -> (Data, [Signal]) {
-        try tick(now: now)
-        var output = Data(), signals: [Signal] = [], data = input
+        var signals = try tick(now: now)
+        var output = Data(), data = input
         if rx == nil {
             guard clear.pending.count + input.count <= 1 << 20 else { throw BandError.wire("Setup buffer overflow.") }
             clear.pending.append(input); data = Data()
@@ -162,6 +173,12 @@ final class BandProtocol {
             pending[packet.channel] = nil
             // EMG is optional: a refused configuration read is reported, never fatal.
             if p.operation == "emg_configuration" { return (Data(), [.reply(operation: p.operation, payload: packet.payload)]) }
+            if p.isHandRequest {
+                guard let status = try? f.integer(2), status == 1 else {
+                    return (Data(), [.handUnavailable("The band did not confirm the wrist setting request. Try again.")])
+                }
+                return (Data(), [.reply(operation: p.operation, payload: packet.payload)])
+            }
             let wantsEMG = try p.flags.map { try Fields($0).integer(2) == 1 } ?? false
             if try f.integer(2) != 1, wantsEMG {
                 return (Data(), [.emgUnavailable("Band rejected a stream request that included EMG.")])
@@ -214,6 +231,14 @@ final class BandProtocol {
         if let p = pending[channel], p.operation == "emg_configuration" {
             pending[channel] = nil
             return (Data(), [.emgUnavailable("Band closed the EMG configuration service (\(String(kind, radix: 16))).")])
+        }
+        if let p = pending[channel], p.isHandRequest {
+            pending[channel] = nil; opened.remove(channel)
+            return (Data(), [.handUnavailable("The band closed the wrist setting request. Try again.")])
+        }
+        if channel == 6, pending[channel] == nil {
+            opened.remove(channel)
+            return (Data(), [])
         }
         if pending[channel] != nil || [5, 6, 7].contains(channel) { throw BandError.wire("Band service closed (\(String(kind, radix: 16))).") }
         return (Data(), [])

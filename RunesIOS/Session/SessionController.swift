@@ -260,6 +260,10 @@ final class SessionController: ObservableObject {
     func select(_ device: BandDevice) { core.transport.perform { [core] in core.select(device) } }
     func select(id: UUID) { core.transport.perform { [core] in core.select(id: id) } }
     func refreshIdentities() { core.transport.perform { [core] in core.refreshIdentityChoices() } }
+    func setHand(_ hand: Handedness) {
+        guard foreground, let band = snapshot.selected else { return }
+        core.transport.perform { [core] in core.setHand(hand, for: band) }
+    }
     /// True when the selected band can connect with a saved identity, without signing in.
     var canConnectWithoutSignIn: Bool { snapshot.selected != nil && snapshot.identityChoices.contains { $0.eligible } }
     var canSetUpBandAgain: Bool { BandSetupAuthorization.canRestart(snapshot, foreground: foreground, signingIn: isSigningIn) }

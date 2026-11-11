@@ -112,8 +112,10 @@ final class SessionCore: @unchecked Sendable {
         transport.onTick = { [weak self] in self?.tick() }
         transport.onRestore = { [weak self] id in
             guard let self else { return }
+            if self.snapshot.selected != id { self.clearHand() }
             self.proto = nil; self.sequences.reset(); self.interpreter.reset(); self.sessionID = UUID(); self.snapshot.selected = id
             self.pendingStreams = nil; self.activeStreams = nil; self.resetEMG()
+            self.handRequested = false
             self.snapshot.connectionAttempt.begin()
             self.record("restoration", "Restored peripheral; a new authenticated channel is required.")
             self.transition(.connecting, "Restoring band connection.")
@@ -147,7 +149,7 @@ final class SessionCore: @unchecked Sendable {
         if state == .streaming { snapshot.connectionAttempt.reach(.ready) }
         snapshot.state = state; snapshot.message = message
         WakeProbe.shared.setBandState(state.rawValue)
-        if state != .streaming { onRelayReady?(nil) }
+        if state != .streaming { snapshot.handSetting.cancel(); onRelayReady?(nil) }
         record("connection", "\(state.rawValue): \(message)"); publish()
     }
     private func record(_ kind: String, _ message: String? = nil, event: GestureEvent? = nil, receipt: ReceiptContext? = nil) {
@@ -182,6 +184,7 @@ final class SessionCore: @unchecked Sendable {
     func select(_ device: BandDevice) { select(id: device.id) }
     func select(id: UUID) {
         guard !snapshot.wantsConnection, stoppingUntil == nil, snapshot.state != .disconnecting else { return }
+        if snapshot.selected != id { clearHand() }
         snapshot.selected = id
         snapshot.connectionAttempt = ConnectionAttempt()
         snapshot.issue = nil
@@ -354,14 +357,35 @@ final class SessionCore: @unchecked Sendable {
         pendingStreams = requested; pendingEMG = wantEMG
     }
 
-    /// Reads the wrist setting once per connection, as the Mac app does. A band that
-    /// rejected the read twice is not asked again, so it can never cause a reconnect loop.
+    /// Limit automatic reads; an explicit wrist change can retry.
     private func requestHand() {
         let defaults = UserDefaults.standard, attempts = defaults.integer(forKey: "handReadAttempts")
-        guard !handRequested, attempts < 2 else { return }
+        guard !handRequested else { return }
         handRequested = true
+        guard attempts < 2 else {
+            UserDefaults.standard.removeObject(forKey: "bandHand")
+            snapshot.handSetting.fail("The wrist setting could not be read. Choose a wrist to try again."); publish(); return
+        }
+        guard snapshot.handSetting.read() else { return }
+        defaults.removeObject(forKey: "bandHand")
         defaults.set(attempts + 1, forKey: "handReadAttempts")
-        do { try rpc("read_hand", 6, 5) } catch { record("hand", "Hand read not sent.") }
+        do { try rpc("read_hand", 6, 5) }
+        catch { snapshot.handSetting.fail("Could not read the wrist setting. Try again.") }
+        publish()
+    }
+
+    func setHand(_ hand: Handedness, for band: UUID) {
+        guard snapshot.selected == band, appState == "foreground", snapshot.state == .streaming,
+              snapshot.handSetting.change(to: hand) else { return }
+        UserDefaults.standard.removeObject(forKey: "bandHand")
+        record("hand", "Requested \(hand.rawValue) wrist."); publish()
+        do { try rpc("set_hand", 6, 5, hand.configuration) }
+        catch { snapshot.handSetting.fail("Could not change the wrist setting. Reconnect and try again."); fail(error) }
+    }
+
+    private func clearHand() {
+        snapshot.handSetting = HandSetting()
+        for key in ["bandHand", "handReadAttempts"] { UserDefaults.standard.removeObject(forKey: key) }
     }
 
     private func handle(_ signal: BandProtocol.Signal, receipt: ReceiptContext) throws {
@@ -414,14 +438,17 @@ final class SessionCore: @unchecked Sendable {
                     try reconcileStreams()
                 }
             case "stop_streams": finishDisconnect()
+            case "set_hand":
+                if snapshot.handSetting.wrote() { try rpc("read_hand", 6, 5) }
             case "read_hand":
-                if let config = try? Fields(Fields(payload).bytes(6)), let value = try? config.integer(10), value <= 1 {
-                    let hand: Handedness = value == 1 ? .left : .right
-                    snapshot.hand = hand
+                let hand = Handedness.read(payload)
+                if snapshot.handSetting.received(hand), let hand {
                     UserDefaults.standard.set(hand.rawValue, forKey: "bandHand")
                     UserDefaults.standard.set(0, forKey: "handReadAttempts")
-                    record("hand", hand.rawValue); publish()
-                } else { record("hand", "Hand reply could not be read.") }
+                    record("hand", "Confirmed \(hand.rawValue) wrist.")
+                }
+                if let error = snapshot.handSetting.error { record("hand", error) }
+                publish()
             default: break
             }
         case .ownership(let step):
@@ -432,6 +459,8 @@ final class SessionCore: @unchecked Sendable {
             emgStatus(reason)
             if pendingStreams != nil { pendingStreams = nil; pendingEMG = nil }
             try reconcileStreams()
+        case .handUnavailable(let reason):
+            snapshot.handSetting.fail(reason); record("hand", reason); publish()
         case .emg(let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))
@@ -518,11 +547,11 @@ final class SessionCore: @unchecked Sendable {
     func forget(_ completion: @escaping () -> Void) {
         disconnect { [weak self] _ in
             guard let self else { return }
-            self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; self.snapshot.hand = nil
+            self.snapshot.selected = nil; self.snapshot.devices = []; self.snapshot.battery = nil; self.clearHand()
             self.snapshot.issue = nil; self.snapshot.events = []; self.snapshot.eventCount = 0
             self.snapshot.connectionAttempt = ConnectionAttempt()
             self.snapshot.lastGesture = nil; self.snapshot.gestureTotal = 0
-            for key in ["selectedBand", "bandHand", "handReadAttempts"] { UserDefaults.standard.removeObject(forKey: key) }
+            UserDefaults.standard.removeObject(forKey: "selectedBand")
             self.record("connection", "Band forgotten on this phone; credentials retained.")
             self.transition(.disconnected, "Band forgotten.")
             completion()
@@ -612,7 +641,8 @@ final class SessionCore: @unchecked Sendable {
         if let since = waitingSince, now - since >= Self.notNearbyAfter, snapshot.wantsConnection, snapshot.issue == nil, available, enrollment == nil {
             snapshot.issue = .bandNotNearby; publish()
         }
-        do { try proto?.tick(now: now) } catch { fail(error) }
+        do { for signal in try proto?.tick(now: now) ?? [] { try handle(signal, receipt: context()) } }
+        catch { fail(error) }
     }
     func exportJournal(_ completion: @escaping (Result<URL, Error>) -> Void) {
         do { if journal == nil { journal = try EventJournal() }; completion(.success(try journal!.export())) }

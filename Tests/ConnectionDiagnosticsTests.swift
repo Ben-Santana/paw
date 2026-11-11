@@ -54,6 +54,11 @@ private struct TrustFixture {
         let ready = try send(Frame(channel: 3, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 1) + PB.field(4, Data())))
         precondition(ready.1.contains { if case .ready = $0 { return true }; return false })
     }
+
+    func requestHand(_ operation: String, payload: Data = Data(), now: TimeInterval = 4) throws -> Frame {
+        let output = try host.request(operation, channel: 6, field: 5, payload: payload, now: now)
+        return try DataXReceiver().feed(bandRx.feed(output)[0])[0]
+    }
 }
 
 @main
@@ -65,6 +70,7 @@ struct ConnectionDiagnosticsTests {
     }
 
     static func main() throws {
+        try handSettings()
         for (code, expected): (UInt32, ConnectionFailure.Kind) in [
             (0x03001043, .identityMismatch), (0x03001044, .signatureRejected), (0x0300ABCD, .unknownRejection)
         ] {
@@ -127,5 +133,115 @@ struct ConnectionDiagnosticsTests {
         let setup = ConnectionFailure(.setupRejected(result: 0x03001043, channel: 3))
         precondition(setup.kind == .setupRejected && setup.result == 0x03001043)
         print("Connection diagnostics passed: encrypted trust refusal, signature rejection, unknown results, timeouts, proof verification, and attempt lifecycle.")
+    }
+
+    static func handSettings() throws {
+        precondition(Handedness.right.configuration == Data([0x50, 0x00]))
+        precondition(Handedness.left.configuration == Data([0x50, 0x01]))
+        for hand in [Handedness.left, .right] {
+            let fixture = try TrustFixture(); try fixture.authenticate()
+            let write = try fixture.requestHand("set_hand", payload: hand.configuration)
+            let fields = try Fields(write.payload), id = try fields.integer(1)
+            let writtenConfig = try fields.bytes(5)
+            precondition(writtenConfig == hand.configuration, "Only field10 may be written")
+            _ = caught { _ = try fixture.requestHand("read_hand") }
+            for (channel, replyID): (UInt16, UInt64) in [(5, id), (6, id + 100)] {
+                let stale = try fixture.send(Frame(channel: channel, words: [0x02000315], payload: PB.field(1, replyID) + PB.field(2, 1)), now: 5)
+                precondition(stale.1.isEmpty)
+            }
+            let written = try fixture.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 1)), now: 5)
+            precondition(written.1.contains { if case .reply("set_hand", _) = $0 { return true }; return false })
+            let read = try fixture.requestHand("read_hand", now: 6)
+            let readFields = try Fields(read.payload), readID = try readFields.integer(1)
+            let readConfig = try readFields.bytes(5)
+            precondition(readConfig.isEmpty)
+            let payload = PB.field(1, readID) + PB.field(2, 1) + PB.field(6, hand.configuration + PB.field(6, 2))
+            let readBack = try fixture.send(Frame(channel: 6, words: [0x02000315], payload: payload), now: 7)
+            precondition(readBack.1.contains { if case .reply("read_hand", let value) = $0 { return Handedness.read(value) == hand }; return false })
+        }
+        for config in [Data(), PB.field(10, 2), PB.field(10, 0) + PB.field(10, 1), PB.field(10, Data())] {
+            precondition(Handedness.read(PB.field(6, config)) == nil)
+        }
+
+        for operation in ["read_hand", "set_hand"] {
+            let refused = try TrustFixture(); try refused.authenticate()
+            let request = try refused.requestHand(operation, payload: operation == "set_hand" ? Handedness.left.configuration : Data())
+            let id = try Fields(request.payload).integer(1)
+            let signals = try refused.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 0)), now: 5).1
+            precondition(signals.contains { if case .handUnavailable = $0 { return true }; return false })
+            precondition(refused.host.stage == "ready")
+            _ = try refused.requestHand("read_hand", now: 6)
+
+            let timeout = try TrustFixture(); try timeout.authenticate()
+            let pending = try timeout.requestHand(operation)
+            let staleID = try Fields(pending.payload).integer(1)
+            let expired = try timeout.host.tick(now: 13)
+            precondition(expired.contains { if case .handUnavailable = $0 { return true }; return false })
+            precondition(timeout.host.stage == "ready")
+            let lateClose = try timeout.send(Frame(channel: 6, words: [0x03000001], payload: Data()), now: 13)
+            precondition(lateClose.1.isEmpty && timeout.host.stage == "ready")
+            _ = try timeout.requestHand("read_hand", now: 14)
+            let stale = try timeout.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, staleID) + PB.field(2, 1) + PB.field(6, Handedness.left.configuration)), now: 15)
+            precondition(stale.1.isEmpty)
+
+            let closed = try TrustFixture(); try closed.authenticate()
+            _ = try closed.requestHand(operation)
+            let close = try closed.send(Frame(channel: 6, words: [0x03000001], payload: Data()), now: 5)
+            precondition(close.1.contains { if case .handUnavailable = $0 { return true }; return false })
+            let reopened = try closed.requestHand("read_hand", now: 6)
+            precondition(reopened.words == [0x8100ce56, 0x02000314])
+
+            for status in [Data(), PB.field(2, 1) + PB.field(2, 1), PB.field(2, Data()), PB.field(2, 2)] {
+                let malformed = try TrustFixture(); try malformed.authenticate()
+                let request = try malformed.requestHand(operation)
+                let id = try Fields(request.payload).integer(1)
+                let reply = try malformed.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + status), now: 5)
+                precondition(reply.1.contains { if case .handUnavailable = $0 { return true }; return false })
+                precondition(malformed.host.stage == "ready")
+            }
+        }
+        let required = try TrustFixture(); try required.authenticate()
+        let request = try required.requestHand("request_active", payload: PB.field(6, 2))
+        let id = try Fields(request.payload).integer(1)
+        _ = caught { _ = try required.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 0)), now: 5) }
+        _ = try required.requestHand("request_active", payload: PB.field(6, 2), now: 6)
+        _ = caught { _ = try required.send(Frame(channel: 6, words: [0x03000001], payload: Data()), now: 7) }
+
+        let live = try TrustFixture(); try live.authenticate()
+        let flags = BandProtocol.streamFlags(gyro: false, orientation: false)
+        let start = try live.host.request("start_streams", channel: 5, field: 4, payload: flags, now: 4)
+        let startFrame = try DataXReceiver().feed(live.bandRx.feed(start)[0])[0]
+        let startID = try Fields(startFrame.payload).integer(1)
+        _ = try live.send(Frame(channel: 5, words: [0x02000315], payload: PB.field(1, startID) + PB.field(2, 1) + PB.field(5, flags)), now: 5)
+        for timedOut in [false, true] {
+            let request = try live.requestHand("set_hand", payload: Handedness.left.configuration, now: timedOut ? 10 : 6)
+            let id = try Fields(request.payload).integer(1)
+            if timedOut { _ = try live.host.tick(now: 19) }
+            else { _ = try live.send(Frame(channel: 6, words: [0x02000315], payload: PB.field(1, id) + PB.field(2, 0)), now: 7) }
+            let gesture = try live.send(Frame(channel: 0x8005, words: [0x0200020d], payload:
+                PB.field(1, timedOut ? 2 : 1) + PB.field(2, 100) + PB.field(3, 2) + PB.field(4, 1)), now: timedOut ? 20 : 8)
+            precondition(gesture.1.contains { if case .gesture(2, 1, _, _, _, _) = $0 { return true }; return false })
+        }
+
+        var setting = HandSetting(confirmed: .right)
+        precondition(setting.read() && !setting.change(to: .left))
+        precondition(setting.received(.right))
+        precondition(setting.change(to: .left) && !setting.change(to: .right) && !setting.read())
+        precondition(setting.confirmed == nil && !setting.received(.left))
+        precondition(setting.wrote() && !setting.wrote() && setting.confirmed == nil)
+        precondition(setting.received(.left) && setting.confirmed == .left && !setting.busy && setting.error == nil)
+        precondition(setting.change(to: .right) && setting.wrote())
+        precondition(setting.received(.left) && setting.confirmed == .left && setting.error != nil)
+        precondition(setting.change(to: .right) && setting.wrote())
+        precondition(!setting.received(nil) && setting.confirmed == nil && setting.error != nil)
+        precondition(setting.change(to: .right)); setting.fail("Timed out")
+        precondition(setting.confirmed == nil && !setting.busy)
+        precondition(setting.change(to: .left), "A cached value must remain selectable after an uncertain write")
+        setting.cancel()
+        precondition(setting.change(to: .right)); setting.cancel()
+        precondition(!setting.wrote() && !setting.received(.right) && setting.confirmed == nil)
+        setting = HandSetting()
+        precondition(!setting.received(.right) && setting.confirmed == nil)
+        print("Wrist setting checks passed: explicit0/1 partial writes, serialized readback, rejection, timeout, stale replies and confirmed state.")
     }
 }
