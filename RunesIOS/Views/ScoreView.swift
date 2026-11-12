@@ -64,7 +64,7 @@ struct ScoreScreen: View {
                               height: geo.size.height + insets.top + insets.bottom)
             ZStack {
                 // Everyone is always laid out underneath, so the selected tile's place is known.
-                ScoreBoard(game: store.game, active: showAll && !morphing, hidden: morphing ? store.game.selected : nil, actions: actions)
+                ScoreBoard(game: store.game, hidden: morphing ? store.game.selected : nil, actions: actions)
                     .allowsHitTesting(showAll && !morphing).accessibilityHidden(!showAll)
                 if !showAll && !morphing {
                     ScoreStage(game: store.game, screen: full.size, actions: actions)
@@ -74,7 +74,7 @@ struct ScoreScreen: View {
                 if morphing, store.game.players.indices.contains(store.game.selected) {
                     let frame = boxExpanded ? full : (tile ?? full)
                     PlayerFace(game: store.game, index: store.game.selected, expanded: boxExpanded,
-                               screen: full.size, insets: insets, active: false)
+                               screen: full.size, insets: insets)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
                         .allowsHitTesting(false).accessibilityHidden(true)
@@ -83,7 +83,6 @@ struct ScoreScreen: View {
             .coordinateSpace(name: screenSpace)
             .onPreferenceChange(SelectedTileKey.self) { tile = $0 }
         }
-        .sensoryFeedback(.selection, trigger: store.game.selected)
         .page()
         // The real navigation bar, so the back button stays put when this is pushed, as on
         // every other screen. Full screen keeps only the back button.
@@ -200,6 +199,7 @@ struct ScoreStage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let slide = Animation.spring(duration: 0.45, bounce: 0.14)
+    private var player: ScorePlayer { game.players[game.selected] }
 
     var body: some View {
         // The colour runs under the island and home indicator; the insets are read here
@@ -210,10 +210,25 @@ struct ScoreStage: View {
                 ScoreTint.fill(game.players[game.selected].tint)
                 ForEach(Array(game.players.enumerated()), id: \.element.id) { index, _ in
                     // The next player waits on the right, so a swipe to the left brings them in.
-                    PlayerFace(game: game, index: index, expanded: true, screen: screen, insets: insets, actions: actions)
+                    PlayerFace(game: game, index: index, expanded: true, screen: screen, insets: insets, pinned: true, actions: actions)
+                        .clipped()
                         .offset(x: CGFloat(index - game.selected) * screen.width + drag)
                         .accessibilityHidden(index != game.selected)
                 }
+                // The minus, the dots and the way out stay put while the pages slide under
+                // them, like the back button; they act on whoever is selected.
+                VStack(spacing: 0) {
+                    Spacer().allowsHitTesting(false)
+                    HStack(spacing: 0) {
+                        MinusBar(name: player.name, enabled: game.canTake(game.selected)) { actions.change(game.selected, -1) }
+                        Spacer(minLength: 0).allowsHitTesting(false)
+                    }
+                    PageDots(count: game.players.count, selected: game.selected) { actions.showAll(true) }.frame(height: Metric.tap)
+                }
+                .padding(.bottom, max(insets.bottom, 8))
+                .padding(.leading, max(insets.leading, 12))
+                .padding(.trailing, max(insets.trailing, 12))
+                .foregroundStyle(ScoreTint.ink(player.tint))
             }
             .ignoresSafeArea()
         }
@@ -255,37 +270,98 @@ private struct PlayerFace: View {
     /// grow smoothly; nil draws it at tile size.
     var screen: CGSize? = nil
     var insets = EdgeInsets()
-    /// False when another copy of this view is the one on screen, so haptics fire once.
-    var active = true
+    /// True on a full-screen page: the stage draws the minus, dots and chevron once, fixed,
+    /// so they don't slide with the page. The space is kept, so the rest stays where it was.
+    var pinned = false
     var actions = ScoreActions()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bump = false
-    /// How many characters the number had before its latest change. A digit coming or going
-    /// (10 → 9) mustn't bounce: the spring would overshoot the leaving digit's fade, and it
-    /// would flicker back before it's gone.
-    @State private var drawnCount: Int?
+    /// The points as drawn, a moment behind `label` while a change starts; nil is `label`.
+    @State private var shown: String?
+    /// The score `shown` stands for: the roll reads its direction from this, so it must
+    /// change in the same step as the text, not a step ahead with the model.
+    @State private var shownScore: Int?
+    /// A number of another length on its way out (10 as 9 comes in), at its own size.
+    @State private var leaving: (text: String, size: CGFloat)?
+    /// How far that swap has got, 0 to 1, and which way it rolls: down for a lower score.
+    @State private var swap: CGFloat = 1
+    @State private var swapDown = false
 
     private var player: ScorePlayer { game.players[index] }
-    private var numberAnimation: Animation {
-        label.count == (drawnCount ?? label.count)
-            ? .spring(duration: 0.3, bounce: 0.3)
-            : .spring(duration: 0.25, bounce: 0)
-    }
     private var ink: Color { ScoreTint.ink(player.tint) }
     /// The player side swipes have reached; with more than two, the one the index finger changes.
     private var selected: Bool { game.selected == index }
     /// The points as the game type reads them: a number, or tennis's 15, 30, 40 and Ad.
     private var label: String { game.points(index) }
-    /// Everything the player has won, so haptics and the bump follow a won game too.
+    private var text: String { shown ?? label }
+    /// Everything the player has won, so the bump follows a won game too.
     private var tally: Int { player.sets * 1_000_000 + player.games * 1_000 + player.score }
-    private var tileSize: CGFloat {
+    private var tileSize: CGFloat { tileSize(text.count) }
+    private var drawnSize: CGFloat { drawnSize(text.count) }
+    private func tileSize(_ count: Int) -> CGFloat {
         let base: CGFloat = game.players.count > 4 ? 64 : game.players.count > 2 ? 88 : 120
-        return label.count > 3 ? base * 0.5 : label.count > 2 ? base * 0.64 : base
+        return count > 3 ? base * 0.5 : count > 2 ? base * 0.64 : base
     }
-    private var drawnSize: CGFloat {
-        guard let screen else { return tileSize }
-        let base: CGFloat = label.count > 3 ? 120 : label.count > 2 ? 170 : 240
-        return max(tileSize, min(base, screen.height * 0.5))
+    private func drawnSize(_ count: Int) -> CGFloat {
+        guard let screen else { return tileSize(count) }
+        let base: CGFloat = count > 3 ? 120 : count > 2 ? 170 : 240
+        var size = min(base, screen.height * 0.5)
+        // Sets and games stand to the left of the centred number: keep both on screen. A
+        // digit is about 0.6 of the size wide; the tallies and their gap take about a third.
+        if game.rules.sets > 1 || game.rules.games > 1 {
+            size = min(size, (screen.width / 2 - 20) / (0.3 * CGFloat(count) + 0.35))
+        }
+        return max(tileSize(count), size)
+    }
+
+    private static let roll = Animation.spring(duration: 0.3, bounce: 0.3)
+
+    /// One step of the vertical roll: `travel` is -1 (above, coming in) through 0 (in place)
+    /// to 1 (below, gone), flipped for a higher score. Fades and blurs as it leaves the
+    /// middle; the opacity is clamped so the spring's overshoot can't bring a gone number back.
+    private func rolled(_ content: some View, size: CGFloat, travel: CGFloat) -> some View {
+        let away = min(abs(travel) * 1.6, 1)
+        return content
+            .font(.geist(size, .semibold, relativeTo: .largeTitle)).monospacedDigit()
+            .fixedSize()
+            .blur(radius: size * 0.06 * away)
+            .opacity(1 - away)
+            .offset(y: travel * size * 0.45 * (swapDown ? 1 : -1))
+    }
+
+    /// The points. The frame stays the new number's, centred: one of another length on its
+    /// way out is drawn over it, so nothing moves sideways (see `numberChanged`).
+    private var number: some View {
+        let incoming = Text(text).contentTransition(.numericText(value: Double(shownScore ?? player.score)))
+        return rolled(incoming, size: drawnSize, travel: swap - 1)
+            .overlay {
+                if let leaving {
+                    rolled(Text(leaving.text), size: leaving.size, travel: swap).allowsHitTesting(false)
+                }
+            }
+            .onAppear { shown = label; shownScore = player.score }
+            .onChange(of: label) { old, new in numberChanged(from: old, to: new) }
+    }
+
+    /// The new points: digits roll in place when the length stays (7 → 8). A length change
+    /// (10 → 9) rolls the whole number instead, as one, the way the digits go: the
+    /// rolling text alone would leave the dropped digit fading where it stood.
+    private func numberChanged(from old: String, to new: String) {
+        if reduceMotion { leaving = nil; shown = new; shownScore = player.score; return }
+        if old.count == new.count { withAnimation(Self.roll) { shown = new; shownScore = player.score }; return }
+        // The starting positions, set at once: the label's own animation mustn't carry them.
+        var start = Transaction()
+        start.disablesAnimations = true
+        withTransaction(start) {
+            swapDown = (Int(new) ?? 0) < (Int(old) ?? 0)
+            leaving = (old, drawnSize(old.count))
+            swap = 0
+            shown = new
+            shownScore = player.score
+        }
+        DispatchQueue.main.async {
+            withAnimation(Self.roll) { swap = 1 } completion: { if swap == 1 { leaving = nil } }
+        }
     }
 
     var body: some View {
@@ -298,13 +374,14 @@ private struct PlayerFace: View {
                         .strokeBorder(.white, lineWidth: 3).opacity(!expanded && selected ? 1 : 0)
                 }
                 .overlay {
-                    Text(label)
-                        .font(.geist(drawnSize, .semibold, relativeTo: .largeTitle)).monospacedDigit()
-                        .fixedSize()
-                        .contentTransition(.numericText(value: Double(player.score)))
-                        .animation(numberAnimation, value: label)
-                        .onChange(of: label, initial: true) { _, new in drawnCount = new.count }
-                        .scaleEffect((expanded ? 1 : tileSize / drawnSize) * (bump && !reduceMotion ? 1.07 : 1))
+                    number
+                    // Sets and games won sit just left of the points, so the number stays centred.
+                    .overlay(alignment: .leading) {
+                        Tallies(game: game, index: index, size: drawnSize, ink: ink)
+                            .alignmentGuide(.leading) { $0[.trailing] + drawnSize * 0.1 }
+                    }
+                    .animation(.spring(duration: 0.3, bounce: 0.3), value: label)
+                    .scaleEffect((expanded ? 1 : tileSize / drawnSize) * (bump && !reduceMotion ? 1.07 : 1))
                 }
                 // Under the number, near the end of a game: the points still to win it.
                 .overlay {
@@ -341,35 +418,23 @@ private struct PlayerFace: View {
                     .accessibilityHint("Renames or removes this player.")
                     Color.clear.frame(width: expanded ? Metric.tap : 0, height: Metric.tap)
                 }
-                // Games and sets won, for game types that count them, and who won the match.
-                if let standing = game.standing(index) {
-                    Text(standing).font(.label).monospacedDigit().lineLimit(1).fixedSize().opacity(0.8)
+                // Who won the match; sets and games stand beside the number (`Tallies`).
+                if game.winner == index {
+                    Text("Won").font(.label).lineLimit(1).fixedSize().opacity(0.8)
                         .scaleEffect(expanded ? 1 : 0.8).padding(.top, expanded ? -6 : -12)
-                        .contentTransition(.numericText()).animation(.standard, value: standing)
-                        .allowsHitTesting(false).accessibilityHidden(true)
+                        .transition(.opacity).allowsHitTesting(false).accessibilityHidden(true)
                 }
                 Spacer().allowsHitTesting(false)
                 HStack(spacing: 0) {
                     MinusBar(name: player.name, enabled: game.canTake(index)) { actions.change(index, -1) }
+                        .opacity(pinned ? 0 : 1).allowsHitTesting(!pinned).accessibilityHidden(pinned)
                     Spacer(minLength: 0).allowsHitTesting(false)
                     hints.padding(.trailing, 10).allowsHitTesting(false)
                 }
                 // Full screen only: which player this is, and the way out to everyone.
-                Button { actions.showAll(true) } label: {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 6) {
-                            ForEach(game.players.indices, id: \.self) { i in
-                                Circle().frame(width: 6, height: 6).opacity(i == index ? 0.9 : 0.3)
-                            }
-                        }
-                        LucideIcon(.chevronUp, size: 18).opacity(0.6)
-                    }
-                    .frame(maxWidth: .infinity).contentShape(Rectangle())
-                }
-                .buttonStyle(PressRow())
-                .frame(height: expanded ? Metric.tap : 0)
-                .opacity(expanded ? 1 : 0).allowsHitTesting(expanded).accessibilityHidden(!expanded)
-                .accessibilityLabel("All scores")
+                PageDots(count: game.players.count, selected: index) { actions.showAll(true) }
+                    .frame(height: expanded ? Metric.tap : 0)
+                    .opacity(expanded && !pinned ? 1 : 0).allowsHitTesting(expanded && !pinned).accessibilityHidden(!expanded || pinned)
             }
             .padding(.top, expanded ? max(UIApplication.shared.windowSafeTop, 8) : 6)
             .padding(.bottom, expanded ? max(insets.bottom, 8) : 8)
@@ -377,8 +442,6 @@ private struct PlayerFace: View {
             .padding(.trailing, expanded ? max(insets.trailing, 12) : 8)
         }
         .foregroundStyle(ink)
-        // Only the player who was changed: a won game also puts the others back to zero.
-        .sensoryFeedback(trigger: tally) { old, new in active && selected ? (new > old ? .increase : .decrease) : nil }
         .onChange(of: tally) { _, _ in
             guard !reduceMotion else { return }
             bump = true
@@ -394,6 +457,36 @@ private struct PlayerFace: View {
                 ForEach(hints, id: \.self) { GestureHint(trigger: $0.trigger, effect: $0.effect) }
             }
             .opacity(game.live ? 0.8 : 0.4).transition(.opacity)
+        }
+    }
+}
+
+/// Sets and games won, for game types that count them: sets above games, as bare numbers
+/// in a shade of the player's colour (their ink, faintly, so darker on light colours and
+/// lighter on cobalt). No labels; the game makes them clear. Sized from the score, so they
+/// grow and shrink with it.
+private struct Tallies: View {
+    let game: ScoreGame
+    let index: Int
+    /// The point number's size.
+    let size: CGFloat
+    let ink: Color
+
+    var body: some View {
+        let player = game.players[index]
+        let counts = [game.rules.sets > 1 ? player.sets : nil, game.rules.games > 1 ? player.games : nil].compactMap { $0 }
+        if !counts.isEmpty {
+            VStack(alignment: .trailing, spacing: 0) {
+                ForEach(Array(counts.enumerated()), id: \.offset) { _, count in
+                    Text("\(count)")
+                        .font(.geist(size * 0.3, .semibold, relativeTo: .title)).monospacedDigit()
+                        .contentTransition(.numericText(value: Double(count)))
+                        .animation(.spring(duration: 0.3, bounce: 0.3), value: count)
+                }
+            }
+            .foregroundStyle(ink.opacity(0.3))
+            .lineLimit(1).fixedSize()
+            .allowsHitTesting(false).accessibilityHidden(true)
         }
     }
 }
@@ -428,6 +521,28 @@ private struct ToGo: View {
             withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { beat = true }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// Which player this is among the others, over the chevron back to everyone's scores.
+private struct PageDots: View {
+    let count: Int
+    let selected: Int
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    ForEach(0..<count, id: \.self) { i in
+                        Circle().frame(width: 6, height: 6).opacity(i == selected ? 0.9 : 0.3)
+                    }
+                }
+                LucideIcon(.chevronUp, size: 18).opacity(0.6)
+            }
+            .frame(maxWidth: .infinity).contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .accessibilityLabel("All scores")
     }
 }
 
@@ -469,8 +584,6 @@ private struct GestureHint: View {
 /// show any state.
 struct ScoreBoard: View {
     let game: ScoreGame
-    /// False while zoomed in; both views stay laid out, and only the shown one gives haptics.
-    var active = true
     /// The tile the moving box stands in for during a zoom.
     var hidden: Int? = nil
     var actions = ScoreActions()
@@ -503,7 +616,6 @@ struct ScoreBoard: View {
                 }
             }
         }
-        .sensoryFeedback(trigger: game.live) { _, _ in active ? .impact(weight: .light) : nil }
         .animation(.standard, value: game.live)
         .animation(.standard, value: game.selected)
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
@@ -521,7 +633,7 @@ struct ScoreBoard: View {
             ForEach(rows(wide: wide), id: \.self) { row in
                 HStack(spacing: 4) {
                     ForEach(row, id: \.self) { index in
-                        ScorePanel(game: game, index: index, active: active, actions: actions)
+                        ScorePanel(game: game, index: index, actions: actions)
                             .opacity(hidden == index ? 0 : 1)
                             .id(game.players[index].id)
                             .transition(.scale(scale: 0.9).combined(with: .opacity))
@@ -559,11 +671,10 @@ struct ScoreBoard: View {
 private struct ScorePanel: View {
     let game: ScoreGame
     let index: Int
-    let active: Bool
     let actions: ScoreActions
 
     var body: some View {
-        PlayerFace(game: game, index: index, expanded: false, active: active, actions: actions)
+        PlayerFace(game: game, index: index, expanded: false, actions: actions)
             .background {
                 if game.selected == index {
                     GeometryReader { geo in

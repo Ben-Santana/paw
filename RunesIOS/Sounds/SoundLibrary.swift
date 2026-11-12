@@ -8,11 +8,33 @@ import Foundation
 enum SoundVoice: String, Codable, CaseIterable, Identifiable, Sendable {
     case whole, pop, soft, lift, bell, hum, click, tick, pip, bells, tone, tap, wood, rim, pluck, marimba
     case kalimba, glass, sparkle, harp, sonar, bubble, droplet, chirp, blip, coin, laser, swoosh, warm, resolve, bounce, shimmer
+    // Not sounds: these vibrate the band instead (`BandBuzz`).
+    case bandBuzz, bandTap, bandDouble, bandTriple, bandLong, bandHeartbeat, bandRise, bandFade, bandFlutter
 
     var id: String { rawValue }
 
-    var label: String {
+    /// The Mac's sounds, without the band vibrations.
+    static let sounds = allCases.filter { $0.bandBuzz == nil }
+    static let bandBuzzes = allCases.filter { $0.bandBuzz != nil }
+
+    var bandBuzz: BandBuzz? {
         switch self {
+        case .bandBuzz: .buzz
+        case .bandTap: .tap
+        case .bandDouble: .double
+        case .bandTriple: .triple
+        case .bandLong: .long
+        case .bandHeartbeat: .heartbeat
+        case .bandRise: .rise
+        case .bandFade: .fade
+        case .bandFlutter: .flutter
+        default: nil
+        }
+    }
+
+    var label: String {
+        if let bandBuzz { return bandBuzz == .buzz ? "Vibrate band" : "Band " + bandBuzz.label.lowercased() }
+        return switch self {
         case .whole: "Whole step"
         case .pop: "Pop"
         case .soft: "Soft"
@@ -45,6 +67,7 @@ enum SoundVoice: String, Codable, CaseIterable, Identifiable, Sendable {
         case .resolve: "Resolve"
         case .bounce: "Bounce"
         case .shimmer: "Shimmer"
+        case .bandBuzz, .bandTap, .bandDouble, .bandTriple, .bandLong, .bandHeartbeat, .bandRise, .bandFade, .bandFlutter: ""
         }
     }
 }
@@ -142,6 +165,8 @@ struct SoundSynth {
             }
         case .shimmer:
             for (i, ratio) in [2, 2.01, 3, 3.02].enumerated() { sine(now + Double(i) * 0.018, f * ratio, 0.018, 0.055, 0.65) }
+        // Silent: played on the band, not the speaker.
+        case .bandBuzz, .bandTap, .bandDouble, .bandTriple, .bandLong, .bandHeartbeat, .bandRise, .bandFade, .bandFlutter: break
         }
     }
 

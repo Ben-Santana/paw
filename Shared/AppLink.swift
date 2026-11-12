@@ -3,7 +3,7 @@ import Foundation
 /// The Runes applications as the Home Screen widgets know them, and the `runes://app/<id>`
 /// link that opens each one. Ids match `RunesApp` in the app.
 enum AppLink: String, CaseIterable, Sendable {
-    case workouts, score, cook, capture
+    case workouts, score, cook, capture, reels
 
     static let scheme = "runes"
 
@@ -13,6 +13,7 @@ enum AppLink: String, CaseIterable, Sendable {
         case .score: "Score"
         case .cook: "Cook"
         case .capture: "Capture"
+        case .reels: "Reels"
         }
     }
 
@@ -23,6 +24,7 @@ enum AppLink: String, CaseIterable, Sendable {
         case .score: LucideData.gamepad2
         case .cook: LucideData.chefHat
         case .capture: LucideData.mic
+        case .reels: LucideData.video
         }
     }
 

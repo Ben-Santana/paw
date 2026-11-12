@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct WristView: View {
-    private static let entranceDuration = 1.0
+    private static let entranceDuration = 1.4
+    private static let nudgeDuration = 0.5
     let setting: HandSetting
     let connected: Bool
     let band: UUID?
@@ -19,83 +20,66 @@ struct WristView: View {
     @State private var motion = WristMotion()
     @State private var feedbackTask: Task<Void, Never>?
     @State private var animatedChange: UUID?
+    @State private var nudged: Date?
+
+    init(setting: HandSetting, connected: Bool, band: UUID?, choose: @escaping (Handedness) -> Void,
+         feedback: @escaping (WristFeedbackPhase, Handedness, UUID) -> Void, cancelFeedback: @escaping (UUID) -> Void) {
+        self.setting = setting; self.connected = connected; self.band = band
+        self.choose = choose; self.feedback = feedback; self.cancelFeedback = cancelFeedback
+        // Opens on the wrist the band is set for, rather than moving there once on screen.
+        _chosenHand = State(initialValue: setting.confirmed)
+    }
 
     private var waiting: Bool { setting.busy }
     private var requested: Handedness? {
         switch setting.pending { case .write(let hand), .verify(let hand): hand; default: nil }
     }
     private var selected: Handedness? { requested ?? chosenHand }
-    private var title: String {
-        if waiting { return "Switching wrist" }
-        if chosenHand != nil, let hand = setting.confirmed { return "\(hand == .left ? "Left" : "Right") wrist" }
-        return setting.error == nil ? "Choose a wrist" : "Wrist not confirmed"
-    }
-    private var detail: String {
-        if !connected { return "Connect your band to change its wrist setting." }
-        if waiting { return "Checking your band’s setting…" }
-        if let error = setting.error { return error }
-        if let hand = setting.confirmed { return "Your band is set for your \(hand.rawValue) wrist." }
-        return "Choose the wrist you’re wearing your band on."
+    private var canSelect: Bool {
+        connected && !waiting && !motion.active && enteredAt == nil && scenePhase == .active
     }
 
     var body: some View {
-        let statusTitle = title
-        let statusDetail = detail
-        return ScrollView {
+        GeometryReader { viewport in
+        ScrollView {
             TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || !visible || scenePhase != .active)) { context in
                 let entry = enteredAt.map { min(1, max(0, context.date.timeIntervalSince($0) / Self.entranceDuration)) } ?? 1
                 let progress = min(1, max(0, (entry - 0.16) / 0.18))
                 let reveal = progress * progress * (3 - 2 * progress)
+                let state = frame(at: context.date)
                 VStack(spacing: 0) {
-                    VStack(spacing: 10) {
-                        Text("Choose your wrist").font(.display).tracking(-0.6)
-                            .modifier(WristReveal(progress: reveal))
-                        Text("Same gestures. Either hand.").font(.bodyText).foregroundStyle(Color.muted)
-                            .modifier(WristReveal(progress: reveal))
-                    }
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 32)
-                    WristArtwork(state: frame(at: context.date),
+                    WristArtwork(state: state,
                                  confirmed: connected && setting.confirmed != nil && setting.error == nil,
                                  moving: animating && !reduceMotion, entrance: entry,
                                  focus: chosenHand == nil ? 0 : 1)
                         .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: chosenHand == nil)
-                        .padding(.top, 12)
-                    VStack(spacing: 10) {
-                        Text(statusTitle).font(.heading)
-                            .modifier(WristReveal(progress: reveal))
-                        Text(statusDetail).font(.bodyText).foregroundStyle(Color.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .modifier(WristReveal(progress: reveal))
-                    }
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity, minHeight: 64)
-                    .padding(.top, 4)
-                    .accessibilityElement(children: .combine)
-                    HStack(spacing: 12) {
-                        option(.left, reveal: reveal)
-                        option(.right, reveal: reveal)
-                    }
-                    .padding(.top, 24)
-                    Text("Wear the band just above your wrist bone.")
-                        .font(.caption).foregroundStyle(Color.muted)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 24)
-                        .modifier(WristReveal(progress: reveal))
+                        .overlay {
+                            HStack(spacing: 0) {
+                                option(.left)
+                                option(.right)
+                            }
+                        }
+                        .overlay(alignment: .top) {
+                            handLabels(blend: state.handBlend)
+                                .modifier(WristReveal(progress: reveal))
+                        }
                 }
                 .padding(.horizontal, Metric.gutter)
-                .padding(.bottom, 32)
+                .padding(.vertical, 32)
+                .frame(maxWidth: .infinity, minHeight: viewport.size.height)
             }
+        }
         }
         .scrollBounceBehavior(.basedOnSize)
         .page()
-        .navigationTitle("Wrist").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Choose wrist").navigationBarTitleDisplayMode(.inline)
         .onAppear {
             visible = true
             enteredAt = reduceMotion ? nil : Date()
-            chosenHand = nil
+            chosenHand = setting.confirmed
             observedChange = setting.changeID
             showConfirmedHand()
+            WristCues.shared.setActive(scenePhase == .active)
         }
         .task {
             do { try await Task.sleep(for: .seconds(Self.entranceDuration)) } catch { return }
@@ -103,18 +87,40 @@ struct WristView: View {
         }
         .onChange(of: setting) { _, _ in updateSetting() }
         .onChange(of: connected) { _, connected in if !connected { stop() } }
-        .onChange(of: band) { _, _ in chosenHand = nil; stop(); showConfirmedHand() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { stop() } }
+        .onChange(of: band) { _, _ in stop(); showConfirmedHand() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { stop() }
+            WristCues.shared.setActive(visible && phase == .active)
+        }
         .onChange(of: reduceMotion) { _, _ in stop() }
-        .onDisappear { visible = false; stop() }
+        .onDisappear { visible = false; stop(); WristCues.shared.setActive(false) }
     }
 
-    private func option(_ hand: Handedness, reveal: Double) -> some View {
+    /// The letters follow their hands: the chosen one darkens and leans in with it.
+    private func handLabels(blend: Double) -> some View {
+        GeometryReader { geometry in
+            let spacing = min(82, geometry.size.width * 0.22)
+            let lean = WristArtwork.focusLean * spacing / WristFlow.handOffset
+            ForEach([("L", -1.0, blend), ("R", 1.0, 1 - blend)], id: \.0) { letter, side, share in
+                let emphasis = chosenHand == nil ? 0 : share
+                Text(letter)
+                    .font(.geist(28, .semibold, relativeTo: .title))
+                    .foregroundStyle(Color.faint.mix(with: .ink, by: emphasis))
+                    .position(x: geometry.size.width / 2 + side * (spacing - lean * emphasis), y: geometry.size.height / 2)
+            }
+        }
+        .frame(height: 40)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: chosenHand == nil)
+        .accessibilityHidden(true)
+    }
+
+    private func option(_ hand: Handedness) -> some View {
         let on = selected == hand
-        return Button(hand == .left ? "Left" : "Right") { select(hand) }
-        .buttonStyle(SecondaryButtonStyle(selected: on))
-        .modifier(WristReveal(progress: reveal))
-        .disabled(!connected || waiting || motion.active || enteredAt != nil || scenePhase != .active)
+        return Button { select(hand) } label: {
+            Color.clear.contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSelect)
         .accessibilityLabel("\(hand == .left ? "Left" : "Right") wrist")
         .accessibilityValue(on ? (waiting ? "Checking" : setting.confirmed == hand ? "Confirmed" : "Not confirmed") : "")
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -125,12 +131,15 @@ struct WristView: View {
     }
 
     private func select(_ hand: Handedness) {
-        guard connected, !waiting, !motion.active, enteredAt == nil, scenePhase == .active else { return }
+        guard canSelect else { return }
         if setting.confirmed == hand && setting.error == nil {
             focus(on: hand)
+            nudged = Date()
+            WristCues.shared.nudge()
             return
         }
         cancelCues()
+        WristCues.shared.tap()
         choose(hand)
     }
 
@@ -142,7 +151,7 @@ struct WristView: View {
     private func accepted(_ id: UUID?) {
         guard id != observedChange else { return }
         observedChange = id
-        if setting.error != nil { stop(); showConfirmedHand(); return }
+        if setting.error != nil { fail(); return }
         guard visible, connected, scenePhase == .active, let id,
               let hand = requested ?? setting.confirmed else { return }
         cancelCues()
@@ -150,12 +159,13 @@ struct WristView: View {
         acceptedChange = id; acceptedHand = hand
         focus(on: hand)
         motion.begin(left: hand == .left, at: Date())
+        if !reduceMotion { WristCues.shared.flight(arrivals: motion.arrivals(), left: hand == .left) }
     }
 
     private func updateSetting() {
         if setting.error != nil || (!setting.busy && setting.confirmed == nil) {
             observedChange = setting.changeID
-            stop(); showConfirmedHand()
+            fail()
             return
         }
         accepted(setting.changeID)
@@ -173,23 +183,33 @@ struct WristView: View {
         if reduceMotion {
             motion.rest(left: hand == .left, at: now)
             feedback(.settle, hand, id)
+            WristCues.shared.settle(left: hand == .left)
             return
         }
         feedbackTask = Task { @MainActor in
             do { try await Task.sleep(for: .seconds(orbitRemaining)) } catch { return }
             guard !Task.isCancelled, animatedChange == id else { return }
             feedback(.wrap, hand, id)
+            WristCues.shared.wrap()
             do { try await Task.sleep(for: .seconds(WristMotion.landingDuration)) } catch { return }
             guard !Task.isCancelled, animatedChange == id else { return }
             feedback(.settle, hand, id)
+            WristCues.shared.settle(left: hand == .left)
             do { try await Task.sleep(for: .seconds(WristMotion.pulseDuration)) } catch { return }
             guard !Task.isCancelled, animatedChange == id else { return }
             motion.rest(left: hand == .left, at: Date())
         }
     }
 
+    /// A change that was under way did not take; with nothing under way this only tidies up.
+    private func fail() {
+        if motion.active { WristCues.shared.refuse() }
+        stop(); showConfirmedHand()
+    }
+
     private func cancelCues() {
         feedbackTask?.cancel(); feedbackTask = nil
+        WristCues.shared.cancel()
         if let id = acceptedChange { cancelFeedback(id) }
         animatedChange = nil; acceptedChange = nil; acceptedHand = nil
     }
@@ -201,7 +221,8 @@ struct WristView: View {
     }
 
     private func showConfirmedHand() {
-        if chosenHand != nil, let hand = setting.confirmed { chosenHand = hand }
+        // Neither hand is chosen while the band's setting is unknown.
+        if !setting.busy { chosenHand = setting.confirmed }
         motion.rest(left: setting.confirmed.map { $0 == .left }, at: Date())
     }
 
@@ -211,6 +232,10 @@ struct WristView: View {
         }
         var result = motion.frame(at: date)
         if !motion.active && setting.confirmed == nil { result.lift = 1 }
+        if let nudged {
+            let age = date.timeIntervalSince(nudged) / Self.nudgeDuration
+            if age >= 0, age < 1 { result.pulse = max(result.pulse, WristMotion.swell(age) * 0.6) }
+        }
         return result
     }
 }

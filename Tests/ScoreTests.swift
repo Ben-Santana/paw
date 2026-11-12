@@ -124,13 +124,25 @@ struct ScoreTests {
         precondition(legacy.players == .mallets && legacy.add == .resolve && legacy.volume == 1, "Older saves get the defaults, volume capped")
 
         // The Mac's whole library renders, each voice audible, the same every time, and capped.
-        precondition(SoundVoice.allCases.count == 32)
-        for voice in SoundVoice.allCases {
+        precondition(SoundVoice.sounds.count == 32)
+        for voice in SoundVoice.sounds {
             let samples = SoundSynth.render(voice)
             let loudest = samples.map(abs).max() ?? 0
             precondition(samples.count > 1000 && abs(loudest - SoundSynth.peak) < 0.001, "\(voice) renders")
             precondition(samples.allSatisfy(\.isFinite))
         }
+        // Band vibrations sit in the library too: silent on the phone, a pulse pattern on the band.
+        precondition(SoundVoice.bandBuzzes.count == BandBuzz.allCases.count)
+        precondition(Set(SoundVoice.bandBuzzes.compactMap(\.bandBuzz)) == Set(BandBuzz.allCases))
+        for voice in SoundVoice.bandBuzzes {
+            precondition(SoundSynth.render(voice).isEmpty, "\(voice) is silent")
+            let pulses = voice.bandBuzz!.pulses
+            precondition(!pulses.isEmpty && pulses.allSatisfy { $0.duration > 0 && $0.amplitude <= 255 })
+        }
+        precondition(BandBuzz.double.pulses.count == 2 && BandBuzz.triple.pulses.count == 3)
+        precondition(BandPulse(duration: 100, amplitude: 230).payload == Data([0x0a, 0x05, 0x08, 0x64, 0x18, 0xe6, 0x01]), "Same request as the wrist setup")
+        let picked = try! JSONDecoder().decode(ScoreSounds.self, from: JSONEncoder().encode({ var s = ScoreSounds(); s.add = .bandDouble; return s }()))
+        precondition(picked.add == .bandDouble, "A band vibration saves like a sound")
         precondition(SoundSynth.render(.click) == SoundSynth.render(.click), "Clicks are deterministic")
         precondition(SoundSynth.render(.pip, frequency: 392) != SoundSynth.render(.pip, frequency: 440), "Pitch follows the player")
 
@@ -223,6 +235,31 @@ struct ScoreTests {
         points(&far, 1, 9); precondition(far.toGo(0) == nil && far.toGo(1) == 2, "Eight to go is too far to count")
         var sets = ScoreGame(); sets.play(rules("volleyball")); points(&sets, 0, 24)
         precondition(sets.pointName(0) == "Set point")
+
+        // Game, set and match cues: on the point that wins it, not the one before.
+        func cue(_ g: inout ScoreGame, _ player: Int, _ delta: Int = 1) -> ScorePoint? {
+            let old = g; g.change(player, by: delta); return ScoreCue.point(from: old, to: g)
+        }
+        var alert = ScoreGame(); alert.play(rules("table-tennis"))
+        points(&alert, 0, 9); precondition(cue(&alert, 0) == nil, "10–0 at eleven is game point, not a game")
+        points(&alert, 1, 9); precondition(cue(&alert, 1) == nil, "Ten all wins nothing")
+        precondition(cue(&alert, 1) == nil, "Advantage wins nothing yet")
+        precondition(cue(&alert, 1) == .game, "Two clear after deuce wins the game")
+        precondition(cue(&alert, 1, -1) == nil, "Taking the winning point back is no win")
+        precondition(cue(&alert, 1) == .game)
+        points(&alert, 0, 22); points(&alert, 0, 10)
+        precondition(cue(&alert, 0) == .match, "Third game in a best of five ends the match")
+        var setAlert = ScoreGame(); setAlert.play(rules("volleyball")); points(&setAlert, 0, 24)
+        precondition(cue(&setAlert, 0) == .set, "Twenty-five wins the set")
+        var setTennis = ScoreGame(); setTennis.play(rules("tennis")); points(&setTennis, 0, 4 * 5 + 3)
+        precondition(cue(&setTennis, 0) == .set, "The sixth game wins the set though games go back to zero")
+        var pointSounds = ScoreSounds()
+        precondition(pointSounds.voice(for: .game) == .bells && pointSounds.voice(for: .match) == .sparkle)
+        pointSounds.gamePoint = nil; pointSounds.setPoint = .coin
+        let savedPoints = try! JSONDecoder().decode(ScoreSounds.self, from: JSONEncoder().encode(pointSounds))
+        precondition(savedPoints.gamePoint == nil && savedPoints.setPoint == .coin, "None and a choice both survive saving")
+        let olderSave = try! JSONDecoder().decode(ScoreSounds.self, from: Data(#"{"on":true}"#.utf8))
+        precondition(olderSave.gamePoint == .bells && olderSave.setPoint == .sparkle, "Older saves get the defaults")
 
         // Tennis: 15, 30, 40, deuce and advantage; six games by two; a tiebreak at six all.
         var tennis = ScoreGame(); tennis.play(rules("tennis"))

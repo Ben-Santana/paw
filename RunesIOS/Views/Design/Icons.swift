@@ -13,7 +13,7 @@ enum Lucide: String, CaseIterable, Sendable {
     case dumbbell, layoutGrid, skipForward, rotateCcw, square
     case settings, audioWaveform, calendarDays, bookOpen, search, timer, flame, trendingUp, activity
     case chevronLeft, chevronUp, qrCode, share, minus, info
-    case mic, chefHat, pause, link, clipboardPaste, bellRing, listChecks, ear, trophy
+    case mic, chefHat, pause, link, clipboardPaste, bellRing, listChecks, ear, trophy, video, pin
 
     var paths: [String] {
         switch self {
@@ -88,6 +88,8 @@ enum Lucide: String, CaseIterable, Sendable {
         case .listChecks: LucideData.listChecks
         case .ear: LucideData.ear
         case .trophy: LucideData.trophy
+        case .video: LucideData.video
+        case .pin: LucideData.pin
         }
     }
     /// Each Lucide element is its own SVG path, so a leading relative "m" starts from the origin.

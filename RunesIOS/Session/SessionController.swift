@@ -97,7 +97,10 @@ final class SessionController: ObservableObject {
         MappingStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.mappings = on; self?.pushMotionDemand() }
         WorkoutStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.workout = on; self?.pushMotionDemand() }
         CookStore.shared.onMotionDemand = { [weak self] on in self?.motionDemand.cook = on; self?.pushMotionDemand() }
-        // Motion Lab: raw samples go straight to the recorder on the transport queue; EMG only while recording.
+        // Workout data: raw samples go straight to the recorder on the transport queue; EMG only while a workout records.
+        WorkoutStore.shared.onTrace = { [weak self] trace in
+            MotionLab.shared.trace(trace, hand: self?.snapshot.hand, unit: WorkoutStore.shared.unit)
+        }
         let recorder = MotionLab.recorder
         core.onRaw = { recorder.ingest($0) }
         core.onEMGStatus = { text in Task { @MainActor in MotionLab.shared.emgStatus = text } }
@@ -108,6 +111,9 @@ final class SessionController: ObservableObject {
         }
         WorkoutStore.shared.onActivity = { [weak self] state, alert in self?.live.show(workout: state, alert: alert) }
         WorkoutStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .workouts) }
+        ScoreAudio.shared.onBandBuzz = { [core] buzz in core.transport.perform { core.buzzBand(buzz) } }
+        WorkoutStore.shared.onSound = { voice, volume in ScoreAudio.shared.cue(voice, volume: volume) }
+        WorkoutStore.shared.onSoundsLive = { ScoreAudio.shared.setLive($0, for: "workout") }
         ScoreStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .score) }
         CookStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .cook) }
         CookStore.shared.onActivity = { [weak self] state, alert in self?.live.show(cook: state, alert: alert) }
@@ -127,6 +133,7 @@ final class SessionController: ObservableObject {
             ScoreAudio.shared.preview(voice, pitch: pitch, volume: 0.9)
         }
         CaptureStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .capture) }
+        ReelsStore.shared.onReserve = { [weak self] in self?.reserve($0, for: .reels) }
         // Capture plays its own cues while its microphone is open; these are the rest.
         CaptureStore.shared.onCue = { cue in
             let (voice, pitch): (SoundVoice, Double) = switch cue {
@@ -222,7 +229,8 @@ final class SessionController: ObservableObject {
         if MappingStore.shared.paused {
             MappingStore.shared.receive(gesture)
         } else if !WorkoutStore.shared.consume(gesture), !ScoreStore.shared.consume(gesture),
-                  !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
+                  !CookStore.shared.consume(gesture), !CaptureStore.shared.consume(gesture),
+                  !ReelsStore.shared.consume(gesture) { MappingStore.shared.receive(gesture) }
         guard foreground, UserDefaults.standard.object(forKey: Preferences.haptics) as? Bool ?? true else { return }
         switch gesture.kind {
         case .tap, .doubleTap: tapHaptic.impactOccurred()

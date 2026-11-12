@@ -3,7 +3,7 @@
 //     swiftc -module-cache-path /private/tmp/runes-swift-module-cache RunesIOS/Session/Models.swift RunesIOS/Protocol/Wire.swift \
 //       RunesIOS/Persistence/IdentityStore.swift RunesIOS/Mappings/MappingModel.swift RunesIOS/Mappings/AirGesture.swift RunesIOS/Mappings/MappingEngine.swift \
 //       RunesIOS/Mappings/TriggerRules.swift RunesIOS/Mappings/CommandTrigger.swift Shared/ProfileIcon.swift Shared/SVGPath.swift Shared/LucideData.swift Shared/MuscleFigure.swift \
-//       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift \
+//       RunesIOS/Workouts/ExerciseCatalog.swift RunesIOS/Workouts/WorkoutModel.swift RunesIOS/Sounds/SoundLibrary.swift RunesIOS/Workouts/WorkoutSounds.swift \
 //       Tests/WorkoutTests.swift -o /private/tmp/runes-workout-tests && /private/tmp/runes-workout-tests
 import Foundation
 
@@ -145,6 +145,31 @@ struct WorkoutTests {
         precondition(unknown[0].id == "somethingNew" && !unknown[0].detectsReps)
         print("Exercise catalog: \(Exercise.all.count) exercises, \(Exercise.all.filter(\.detectsReps).count) counted by the band.")
 
-        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting.")
+        // Sound cues: start, each rep, the target, the set, then the workout instead of the last set.
+        var cued = WorkoutRun(plan: WorkoutPlan(name: "Cues", items: [WorkoutItem(exercise: .bicepCurl, sets: 2, reps: 2)]))
+        func step(_ command: WorkoutCommand) -> WorkoutCue? {
+            let before = cued
+            let logged = cued.apply(command)
+            return WorkoutCue.after(command, from: before, to: cued, logged: logged)
+        }
+        precondition(step(.start) == .start)
+        cued.rep(); precondition(WorkoutCue.afterRep(cued) == .rep)
+        cued.rep(); precondition(WorkoutCue.afterRep(cued) == .target)
+        cued.rep(); precondition(WorkoutCue.afterRep(cued) == .rep, "Reps past the target are reps")
+        precondition(step(.repeatLast) == .start, "Restarting a set starts it again")
+        precondition(step(.stop) == .setDone)
+        precondition(step(.stop) == nil, "Stop while waiting does nothing")
+        precondition(step(.start) == .start)
+        precondition(step(.stop) == .workoutDone)
+        precondition(step(.repeatLast) == nil)
+
+        // Sound settings: defaults, a chosen None survives a round trip, older saves get defaults.
+        var sounds = WorkoutSounds()
+        precondition(sounds[.rep] == nil && sounds[.start] != nil, "Rep sound is opt-in")
+        sounds[.setDone] = nil; sounds[.rep] = .tick; sounds.volume = 0.4
+        precondition(try! JSONDecoder().decode(WorkoutSounds.self, from: JSONEncoder().encode(sounds)) == sounds)
+        precondition(try! JSONDecoder().decode(WorkoutSounds.self, from: Data("{}".utf8)) == WorkoutSounds())
+
+        print("Workout checks passed: set flow, repeat and skip, control gestures, swing and burst rep counting, sound cues.")
     }
 }

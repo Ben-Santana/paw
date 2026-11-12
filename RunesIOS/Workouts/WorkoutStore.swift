@@ -19,9 +19,11 @@ final class WorkoutStore: ObservableObject {
         var sensitivity: RepSensitivity
         var history: [WorkoutRecord]
         var unit: WeightUnit = .kg
+        var sounds = WorkoutSounds()
 
-        init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit) {
+        init(plans: [WorkoutPlan], controls: WorkoutControls, sensitivity: RepSensitivity, history: [WorkoutRecord], unit: WeightUnit, sounds: WorkoutSounds) {
             self.plans = plans; self.controls = controls; self.sensitivity = sensitivity; self.history = history; self.unit = unit
+            self.sounds = sounds
         }
         /// Data saved before the split and units existed still loads.
         init(from decoder: Decoder) throws {
@@ -31,6 +33,7 @@ final class WorkoutStore: ObservableObject {
             sensitivity = try c.decodeIfPresent(RepSensitivity.self, forKey: .sensitivity) ?? .normal
             history = try c.decodeIfPresent([WorkoutRecord].self, forKey: .history) ?? []
             unit = try c.decodeIfPresent(WeightUnit.self, forKey: .unit) ?? .kg
+            sounds = (try? c.decodeIfPresent(WorkoutSounds.self, forKey: .sounds)) ?? WorkoutSounds()
         }
     }
 
@@ -39,9 +42,23 @@ final class WorkoutStore: ObservableObject {
     @Published private(set) var sensitivity: RepSensitivity
     @Published private(set) var history: [WorkoutRecord]
     @Published private(set) var unit: WeightUnit
+    @Published private(set) var sounds: WorkoutSounds { didSet { soundsLiveChanged() } }
     @Published private(set) var run: WorkoutRun? {
-        didSet { if (oldValue == nil) != (run == nil), !previewOnly { onReserve?(reservedNow) } }
+        didSet {
+            guard (oldValue == nil) != (run == nil), !previewOnly else { return }
+            onReserve?(reservedNow)
+            soundsLiveChanged()
+        }
     }
+
+    /// Plays a sound at a volume. Set by the session.
+    var onSound: ((SoundVoice, Double) -> Void)?
+    /// Told whether a workout with sounds on is running, so the audio is kept ready to
+    /// play each cue the moment it happens, with the phone locked too. Set by the session.
+    var onSoundsLive: ((Bool) -> Void)? { didSet { soundsLive = nil; soundsLiveChanged() } }
+    private var soundsLive: Bool?
+    /// Plays the target cue when a timed set has been held for its target.
+    private var holdTimer: Task<Void, Never>?
 
     /// Told which gestures a running workout holds (none when nothing runs), so mappings
     /// that use them turn off for as long as it does.
@@ -60,15 +77,18 @@ final class WorkoutStore: ObservableObject {
     var onMotionDemand: ((Bool) -> Void)? { didSet { onMotionDemand?(run != nil) } }
     /// Shows the workout on the Live Activity (nil restores band status); the string is an alert.
     var onActivity: ((WorkoutActivityState?, String?) -> Void)?
+    /// Told when a workout starts and ends and what happens in it, for the raw data recording.
+    var onTrace: ((WorkoutTrace) -> Void)?
 
     private var previewOnly = false
 
     private init() {
-        var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg)
+        var saved = Saved(plans: WorkoutPlan.starterSplit, controls: .standard, sensitivity: .normal, history: [], unit: .kg, sounds: WorkoutSounds())
         if let data = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode(Saved.self, from: data) { saved = decoded }
         plans = saved.plans.map { $0.normalized() }
         controls = saved.controls; sensitivity = saved.sensitivity; history = saved.history; unit = saved.unit
+        sounds = saved.sounds
         decider.onFire = { [weak self] id in
             guard let self, self.run != nil else { return }
             if id == SwitchControls.mappingID { ControlSwitch.shared.toggle(); return }
@@ -88,6 +108,7 @@ final class WorkoutStore: ObservableObject {
     /// Fixed state for screenshots and previews; never saved.
     init(preview plans: [WorkoutPlan], run: WorkoutRun? = nil, history: [WorkoutRecord] = []) {
         self.plans = plans; controls = .standard; sensitivity = .normal; self.history = history; self.run = run; unit = .kg
+        sounds = WorkoutSounds()
         previewOnly = true
     }
     #endif
@@ -111,6 +132,7 @@ final class WorkoutStore: ObservableObject {
     func setTrigger(_ trigger: CommandTrigger?, for command: WorkoutCommand) { controls.setTrigger(trigger, for: command); persist() }
     func setSensitivity(_ value: RepSensitivity) { sensitivity = value; persist() }
     func setUnit(_ value: WeightUnit) { unit = value; persist() }
+    func setSounds(_ change: (inout WorkoutSounds) -> Void) { change(&sounds); persist() }
     func clearHistory() { history = []; persist() }
     func deleteRecord(_ id: String) { history.removeAll { $0.id == id }; persist() }
     func move(planFrom source: IndexSet, to destination: Int) { plans.move(fromOffsets: source, toOffset: destination); persist() }
@@ -182,7 +204,7 @@ final class WorkoutStore: ObservableObject {
 
     private func persist() {
         guard !previewOnly else { return }
-        let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit)
+        let saved = Saved(plans: plans, controls: controls, sensitivity: sensitivity, history: history, unit: unit, sounds: sounds)
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: Self.key) }
     }
 
@@ -194,13 +216,16 @@ final class WorkoutStore: ObservableObject {
         guard next.phase != .finished else { return }
         run = next
         onMotionDemand?(true)
+        if !previewOnly { onTrace?(.began(next)) }
         changed()
     }
 
     /// Ends the workout, keeping any logged sets in history.
     func end() {
         guard let finished = run else { return }
+        if !previewOnly { onTrace?(.ended(finished)) }
         run = nil
+        holdTimer?.cancel(); holdTimer = nil
         Self.feed.count(nil, sensitivity: sensitivity)
         onMotionDemand?(false)
         record(finished)
@@ -209,8 +234,11 @@ final class WorkoutStore: ObservableObject {
 
     func perform(_ command: WorkoutCommand) {
         guard var current = run else { return }
+        let before = current
         let logged = current.apply(command)
         run = current
+        trace(command, from: before, logged: logged, to: current)
+        if let cue = WorkoutCue.after(command, from: before, to: current, logged: logged) { play(cue) }
         changed(alert: logged.map { "\($0.slot.exercise.name), \($0.slot.label.lowercased()): \(Self.value($0))" })
     }
 
@@ -240,7 +268,23 @@ final class WorkoutStore: ObservableObject {
         guard var current = run, current.phase == .counting else { return }
         current.rep()
         run = current
+        if !previewOnly { onTrace?(.event("rep", "\(current.reps)")) }
+        if let cue = WorkoutCue.afterRep(current) { play(cue) }
         changed()
+    }
+
+    /// Labels the raw recording with what the command did.
+    private func trace(_ command: WorkoutCommand, from before: WorkoutRun, logged: SetLog?, to run: WorkoutRun) {
+        guard let onTrace, !previewOnly else { return }
+        onTrace(.event("command", "\(command.rawValue) \(before.phase.rawValue)->\(run.phase.rawValue) reps=\(before.reps)"))
+        if let logged {
+            onTrace(.event("set_logged", "exercise=\(logged.exercise.id) \(logged.slot.label) logged=\(logged.reps) assumed=\(logged.slot.assumed)"))
+        }
+        // A set starts on Start, or restarts on Repeat while counting.
+        if run.phase == .counting, before.phase != .counting || command == .repeatLast, let slot = run.current {
+            let weight = slot.weight.map { "\($0)\(unit.rawValue)" } ?? "none"
+            onTrace(.event("set_start", "exercise=\(slot.exercise.id) \(slot.label) target=\(slot.target) weight=\(weight)"))
+        }
     }
 
     private func changed(alert: String? = nil) {
@@ -253,7 +297,37 @@ final class WorkoutStore: ObservableObject {
         }
         if run.phase == .finished { record(run) }
         guard !previewOnly else { return }
+        scheduleHoldTarget(run)
         onActivity?(activityState(run), alert)
+    }
+
+    // MARK: Sounds
+
+    private func play(_ cue: WorkoutCue) {
+        guard !previewOnly, sounds.on, let voice = sounds[cue] else { return }
+        onSound?(voice, sounds.volume)
+    }
+
+    private func soundsLiveChanged() {
+        guard !previewOnly else { return }
+        let live = run != nil && sounds.on
+        guard live != soundsLive else { return }
+        soundsLive = live
+        onSoundsLive?(live)
+    }
+
+    /// A timed set has no reps to count, so its target is reached by the clock.
+    private func scheduleHoldTarget(_ run: WorkoutRun) {
+        holdTimer?.cancel(); holdTimer = nil
+        guard run.phase == .counting, let slot = run.current, slot.exercise.measure == .seconds,
+              let started = run.setStarted else { return }
+        let wait = started.addingTimeInterval(Double(slot.target)).timeIntervalSinceNow
+        guard wait > 0 else { return }
+        holdTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self, let now = self.run, now.phase == .counting, now.setStarted == started else { return }
+            self.play(.target)
+        }
     }
 
     /// Saves a run's sets to history when it finishes or is ended. A run that carries on

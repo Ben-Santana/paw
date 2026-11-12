@@ -14,7 +14,7 @@ final class SessionCore: @unchecked Sendable {
     private var activeStreams: RelayWire.Demand?
     /// Motion streams the phone itself needs (combos with rotation or movement steps).
     private var localMotion = false
-    /// EMG is only requested while a Motion Lab recording runs.
+    /// EMG is only requested while a workout's raw data is recording.
     private var localEMG = false
     /// Per connection: the EMG layout was read and validated.
     private var emgReady = false
@@ -63,6 +63,10 @@ final class SessionCore: @unchecked Sendable {
     private var handRequested = false
     private var wristFeedbackGate = WristFeedbackGate()
     private var feedbackInFlight: WristFeedbackPhase?
+    /// The rest of the band vibration playing now; `buzzResting` while a pulse and its gap run.
+    private var buzzQueue: [BandPulse] = []
+    private var buzzResting = false
+    private var buzzGeneration = 0
     private var pendingHandTarget: (band: UUID, attempt: Date)?
     private static let notNearbyAfter: TimeInterval = 30
 
@@ -334,7 +338,7 @@ final class SessionCore: @unchecked Sendable {
             emgBlocked = nil
             if emgHardBlocked { emgStatus("EMG is off for this app run after an earlier failure. Relaunch to retry.") }
         }
-        record("motion_lab", on ? "EMG requested for a recording." : "Recording ended; EMG no longer requested.")
+        record("motion_lab", on ? "EMG requested for workout data." : "Workout data stopped; EMG no longer requested.")
         guard snapshot.state == .streaming else { return }
         do { try reconcileStreams() } catch { fail(error) }
     }
@@ -420,6 +424,33 @@ final class SessionCore: @unchecked Sendable {
 
     func cancelWristFeedback(change: UUID) { wristFeedbackGate.cancel(change) }
 
+    /// Vibrates the band, replacing any pattern still playing. Works with the app in the
+    /// background, as long as the band is streaming.
+    func buzzBand(_ buzz: BandBuzz) {
+        guard snapshot.state == .streaming, proto != nil else { return }
+        buzzGeneration += 1
+        buzzQueue = buzz.pulses; buzzResting = false
+        record("band_buzz", "\(buzz.rawValue) requested.")
+        sendNextPulse()
+    }
+
+    /// Sends the next pulse once the band has answered the last one and its gap has passed.
+    private func sendNextPulse() {
+        guard !buzzQueue.isEmpty, !buzzResting else { return }
+        guard snapshot.state == .streaming, let proto else { buzzQueue = []; return }
+        guard proto.canSendWristFeedback else { return }
+        let pulse = buzzQueue.removeFirst()
+        do { try rpc("wrist_feedback", 6, 17, pulse.payload) }
+        catch { record("band_buzz", "Send unconfirmed."); buzzQueue = []; return }
+        guard !buzzQueue.isEmpty else { return }
+        buzzResting = true
+        let generation = buzzGeneration
+        transport.perform(after: Double(pulse.duration + pulse.gap) / 1000) { [weak self] in
+            guard let self, self.buzzGeneration == generation else { return }
+            self.buzzResting = false; self.sendNextPulse()
+        }
+    }
+
     private func clearHand() {
         snapshot.handSetting = HandSetting()
         for key in ["bandHand", "handReadAttempts"] { UserDefaults.standard.removeObject(forKey: key) }
@@ -501,9 +532,11 @@ final class SessionCore: @unchecked Sendable {
         case .wristFeedback(let result):
             if let feedback = feedbackInFlight {
                 record("wrist_feedback", "\(feedback.rawValue) \(result.rawValue).")
+            } else if result != .accepted {
+                record("band_buzz", "Pulse \(result.rawValue).")
             }
             feedbackInFlight = nil
-            sendPendingHand(); publish()
+            sendPendingHand(); sendNextPulse(); publish()
         case .emg(let values, let sequence, let timestamp):
             guard snapshot.state == .streaming else { return }
             onRaw?(RawSample(kind: .emg, uptime: receipt.uptime, sequence: sequence, timestamp: timestamp, emg: values))
@@ -686,6 +719,7 @@ final class SessionCore: @unchecked Sendable {
         }
         do { for signal in try proto?.tick(now: now) ?? [] { try handle(signal, receipt: context()) } }
         catch { fail(error) }
+        sendNextPulse()
     }
     func exportJournal(_ completion: @escaping (Result<URL, Error>) -> Void) {
         do { if journal == nil { journal = try EventJournal() }; completion(.success(try journal!.export())) }

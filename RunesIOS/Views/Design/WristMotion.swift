@@ -14,7 +14,7 @@ struct WristFrame {
 struct WristMotion {
     static let orbitDuration = 2.05
     static let landingDuration = 0.35
-    static let pulseDuration = 0.18
+    static let pulseDuration = 0.45
     static let idleAngularSpeed = Double.pi / 6
     private static var idleSpeed: Double { idleAngularSpeed * WristFlow.radius }
     private var origin = WristFrame()
@@ -54,12 +54,37 @@ struct WristMotion {
         return arrival.timeIntervalSince(date)
     }
 
+    /// Seconds after `begin` at which each bead reaches the wrist it is flying to, first
+    /// bead first. Empty when the orbit stays on one wrist.
+    func arrivals() -> [TimeInterval] {
+        guard started != nil, origin.handBlend != targetHand else { return [] }
+        return (0..<8).map { bead in
+            let target = WristFlow.length + Double(bead) * WristFlow.spacing
+            var low = 0.0, high = Self.orbitDuration
+            for _ in 0..<24 {
+                let middle = (low + high) / 2
+                if orbitDistance(middle) < target { low = middle } else { high = middle }
+            }
+            return high
+        }
+    }
+
+    private func orbitDistance(_ elapsed: Double) -> Double {
+        startDistance + speed * elapsed + (startingSpeed - speed) * ramp * (1 - exp(-elapsed / ramp))
+    }
+
     mutating func rest(left: Bool?, at date: Date) {
         let current = frame(at: date)
         origin = WristFrame(handBlend: left.map { $0 ? 1 : 0 } ?? origin.handBlend, turn: current.turn)
         started = nil
         restingSince = date
         landing = nil
+    }
+
+    /// A size pulse over `u` 0…1: quick to swell, slower to ease back, 0 at both ends.
+    static func swell(_ u: Double) -> Double {
+        let t = min(1, max(0, u))
+        return pow(sin(.pi * pow(t, 0.7)), 2)
     }
 
     func frame(at date: Date) -> WristFrame {
@@ -81,10 +106,10 @@ struct WristMotion {
             result.velocity = idleSpeed + excess * (1 - 3 * u * u + 2 * u * u * u)
             result.lift = landingOrigin.lift * (1 - u) * (1 - u)
             let age = time - Self.landingDuration
-            result.pulse = age >= 0 && age < Self.pulseDuration ? 1 - age / Self.pulseDuration : 0
+            result.pulse = age >= 0 && age < Self.pulseDuration ? Self.swell(age / Self.pulseDuration) : 0
         } else {
             let decay = exp(-elapsed / ramp)
-            result.distance = startDistance + speed * elapsed + (startingSpeed - speed) * ramp * (1 - decay)
+            result.distance = orbitDistance(elapsed)
             result.velocity = speed + (startingSpeed - speed) * decay
             result.lift = 1 - decay
         }

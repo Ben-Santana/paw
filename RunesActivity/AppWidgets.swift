@@ -13,6 +13,7 @@ extension AppLink: AppEnum {
         .score: "Score",
         .cook: "Cook",
         .capture: "Capture",
+        .reels: "Reels",
     ]
 }
 
@@ -73,7 +74,7 @@ struct OneAppProvider: AppIntentTimelineProvider {
 }
 
 struct FourAppsProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> AppsEntry { AppsEntry(date: .now, apps: AppLink.allCases) }
+    func placeholder(in context: Context) -> AppsEntry { AppsEntry(date: .now, apps: Array(AppLink.allCases.prefix(4))) }
     func snapshot(for configuration: FourAppsIntent, in context: Context) async -> AppsEntry {
         AppsEntry(date: .now, apps: configuration.apps)
     }

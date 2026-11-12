@@ -21,6 +21,7 @@ struct ScoreSettingsScreen: View {
                                  note: "Optional: give a player their own gesture or combo, so you can score them without selecting them first.")
                     Button("Reset gestures") { store.resetGestures() }.buttonStyle(.quiet)
                     SwitchControlsBlock()
+                    buzzBlock
                     soundsBlock
                     playersBlock
                 }
@@ -62,6 +63,27 @@ struct ScoreSettingsScreen: View {
         }
     }
 
+    // MARK: Buzzing
+
+    private var buzzBlock: some View {
+        Block {
+            Toggle(isOn: Binding(get: { store.controls.sounds.buzz }, set: { on in
+                store.setSounds { $0.buzz = on }
+                if on { ScoreBuzz.shared.play(.add) }
+            })) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Buzz on each point").font(.bodyText)
+                    Text("One buzz for a point, two for a point taken away or a reset.").font(.caption).foregroundStyle(Color.muted)
+                }
+            }
+            .padding(.vertical, 12)
+        } header: {
+            Heading("Buzzing")
+        } footer: {
+            Note("Off unless you turn it on. With your phone locked during a live game, it uses the longer system vibration.")
+        }
+    }
+
     // MARK: Sounds
 
     private var soundsBlock: some View {
@@ -69,7 +91,7 @@ struct ScoreSettingsScreen: View {
         return Block {
             Toggle(isOn: Binding(get: { sounds.on }, set: { on in store.setSounds { $0.on = on } })) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Play sounds").font(.bodyText)
+                    Text("Play cues").font(.bodyText)
                     Text("While a game is live, also with your phone locked and on silent.").font(.caption).foregroundStyle(Color.muted)
                 }
             }
@@ -88,10 +110,14 @@ struct ScoreSettingsScreen: View {
             soundRow("Point added", sounds.add, slot: .add)
             Hairline(inset: 0)
             soundRow("Point taken away", sounds.take, slot: .take)
+            Hairline(inset: 0)
+            soundRow("Game won", sounds.gamePoint, slot: .gamePoint)
+            Hairline(inset: 0)
+            soundRow("Set or match won", sounds.setPoint, slot: .setPoint)
         } header: {
-            Heading("Sounds")
+            Heading("Cues")
         } footer: {
-            Note("The Mac app’s \(SoundVoice.allCases.count) sounds. Choosing one plays it.")
+            Note("A sound from the Mac app’s \(SoundVoice.sounds.count), or a band vibration. Choosing one plays it. Game and set sounds follow the point’s own sound when that point wins the game, set or match.")
         }
     }
 
@@ -135,15 +161,23 @@ struct ScoreSettingsScreen: View {
         }
         .buttonStyle(PressRow())
         .accessibilityLabel("\(title), \(voice?.label ?? "None")")
-        .accessibilityHint("Chooses the sound.")
+        .accessibilityHint("Chooses the cue.")
     }
 }
 
 /// Which sound a sheet is choosing.
 enum SoundSlot: Hashable, Identifiable {
-    case add, take
+    case add, take, gamePoint, setPoint
     var id: String {
-        switch self { case .add: "add"; case .take: "take" }
+        switch self { case .add: "add"; case .take: "take"; case .gamePoint: "game-point"; case .setPoint: "set-point" }
+    }
+    var title: String {
+        switch self {
+        case .add: "Point added"
+        case .take: "Point taken away"
+        case .gamePoint: "Game won"
+        case .setPoint: "Set or match won"
+        }
     }
 }
 
@@ -195,25 +229,49 @@ private struct ScoreTriggerSheet: View {
 
 // MARK: Sound
 
-/// Lists the whole library; tapping a sound chooses and plays it, so they can be compared.
+/// One of Score's cue sounds.
 private struct SoundSheet: View {
     @ObservedObject var store: ScoreStore
     let slot: SoundSlot
-    @Environment(\.dismiss) private var dismiss
 
     private var sounds: ScoreSounds { store.controls.sounds }
+
     private var selected: SoundVoice? {
-        switch slot { case .add: sounds.add; case .take: sounds.take }
+        switch slot {
+        case .add: sounds.add
+        case .take: sounds.take
+        case .gamePoint: sounds.gamePoint
+        case .setPoint: sounds.setPoint
+        }
     }
-    private var title: String {
-        switch slot { case .add: "Point added"; case .take: "Point taken away" }
+
+    var body: some View {
+        SoundPickerSheet(title: slot.title, selected: selected) { voice in
+            store.setSounds { sounds in
+                switch slot {
+                case .add: sounds.add = voice
+                case .take: sounds.take = voice
+                case .gamePoint: sounds.gamePoint = voice
+                case .setPoint: sounds.setPoint = voice
+                }
+            }
+            if let voice { ScoreAudio.shared.preview(voice, volume: max(0.3, sounds.volume)) }
+        }
     }
+}
+
+/// Lists the whole library; tapping a sound chooses it (the caller plays it), so they can be compared.
+struct SoundPickerSheet: View {
+    let title: String
+    let selected: SoundVoice?
+    let choose: (SoundVoice?) -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ChoiceList(options: [nil] + SoundVoice.allCases.map(Optional.some), selected: .some(selected), label: { voice in
+                    ChoiceList(options: [nil] + SoundVoice.sounds.map(Optional.some), selected: .some(selected), label: { voice in
                         VStack(alignment: .leading, spacing: 2) {
                             if let voice {
                                 Text(voice.label).font(.bodyText)
@@ -222,6 +280,11 @@ private struct SoundSheet: View {
                             }
                         }
                     }, choose: choose)
+                    Heading("Band vibrations").padding(.top, 16)
+                    ChoiceList(options: SoundVoice.bandBuzzes.map(Optional.some), selected: .some(selected), label: { voice in
+                        Text(voice?.bandBuzz?.label ?? "").font(.bodyText)
+                    }, choose: choose)
+                    Note("Vibrates the band on your wrist instead of playing a sound, also with your phone locked. The band needs to be connected.")
                 }
                 .padding(Metric.gutter)
             }
@@ -231,15 +294,5 @@ private struct SoundSheet: View {
         }
         .tint(Color.ink)
         .presentationDetents([.medium, .large])
-    }
-
-    private func choose(_ voice: SoundVoice?) {
-        store.setSounds { sounds in
-            switch slot {
-            case .add: sounds.add = voice
-            case .take: sounds.take = voice
-            }
-        }
-        if let voice { ScoreAudio.shared.preview(voice, volume: max(0.3, sounds.volume)) }
     }
 }

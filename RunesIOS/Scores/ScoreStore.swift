@@ -171,7 +171,11 @@ final class ScoreStore: ObservableObject {
     private func cue(from old: ScoreGame) {
         guard !previewOnly else { return }
         if old.live != game.live { onLive?(game.live) }
-        if game.live, let cue = ScoreCue(from: old, to: game) { onCue?(cue) }
+        if controls.sounds.buzz, let buzz = ScoreBuzz.Kind(from: old, to: game) { ScoreBuzz.shared.play(buzz) }
+        if game.live, let cue = ScoreCue(from: old, to: game) {
+            onCue?(cue)
+            if let point = ScoreCue.point(from: old, to: game) { onCue?(.point(point)) }
+        }
     }
 
     private func show(alert: String? = nil) {

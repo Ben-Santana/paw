@@ -1,35 +1,44 @@
 import SwiftUI
 
-/// Settings → Motion lab. Pick any exercise, record a set with every raw band stream, label it
-/// with the reps actually done, and export everything as one zip.
+/// Settings → Workout data. Every workout records the band's raw streams (gyroscope,
+/// orientation, gestures, 8-channel EMG) with its sets; this lists them and exports one zip.
 struct MotionLabScreen: View {
     @ObservedObject private var lab = MotionLab.shared
     @ObservedObject private var controller = SessionController.shared
-    @State private var search = ""
-    @State private var custom = ""
     @State private var exported: URL?
     @State private var exporting = false
     @State private var confirmClear = false
 
-    private var streaming: Bool { controller.snapshot.state == .streaming }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                PanelGroup("Band", caption: "Each set records gyroscope, orientation, gestures and 8-channel EMG (2048 Hz). EMG is switched on only while a set is recording.") {
-                    ValueRow("Connection") { Text(controller.snapshot.state.title) }
+                PanelGroup("Recording", caption: "While a workout runs, Runes saves every raw band sample, EMG included, alongside your sets. Just do your workouts as usual. Recording stops when you end the workout, or after 3 hours.") {
+                    Toggle(isOn: $lab.enabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Record during workouts").font(.bodyText)
+                            Text("About 120 MB per hour, mostly EMG.").font(.caption).foregroundStyle(Color.muted)
+                        }
+                    }
+                    .padding(.horizontal, Metric.inset).padding(.vertical, 10)
+                    .disabled(lab.active != nil)
                     Rule()
-                    ValueRow("Hand") { Text(controller.snapshot.hand.map { $0 == .left ? "Left" : "Right" } ?? "—") }
+                    ValueRow("Band") { Text(controller.snapshot.state.title) }
                     Rule()
                     Text(lab.emgStatus).font(.caption).foregroundStyle(Color.muted)
                         .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+                    if let problem = lab.problem {
+                        Rule()
+                        Text(problem).font(.caption).foregroundStyle(Color.destructive)
+                            .padding(.horizontal, Metric.inset).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                PanelGroup("Recordings", caption: "\(lab.recordings.count) sets · \(ByteCountFormatter.string(fromByteCount: lab.totalBytes, countStyle: .file)). Export the zip and hand it to Claude for tuning.") {
-                    ActionRow(exporting ? "Preparing zip…" : "Export all recordings", icon: .share) {
+                if let active = lab.active { live(active) }
+                PanelGroup("Export", caption: "\(lab.recordings.count) workout\(lab.recordings.count == 1 ? "" : "s") · \(ByteCountFormatter.string(fromByteCount: lab.totalBytes, countStyle: .file)). Export the zip and hand it to Claude.") {
+                    ActionRow(exporting ? "Preparing zip…" : "Export all workout data", icon: .share) {
                         exporting = true
                         Task { exported = await lab.export(); exporting = false }
                     }
-                    .disabled(exporting || lab.recordings.isEmpty || lab.active != nil)
+                    .disabled(exporting || lab.recordings.isEmpty)
                     if let exported {
                         Rule()
                         ShareLink(item: exported) {
@@ -38,95 +47,23 @@ struct MotionLabScreen: View {
                         .buttonStyle(.plain)
                     }
                     Rule()
-                    ActionRow("Delete all recordings", icon: .trash2) { confirmClear = true }
-                        .disabled(lab.recordings.isEmpty || lab.active != nil)
+                    ActionRow("Delete all workout data", icon: .trash2) { confirmClear = true }
+                        .disabled(lab.recordings.isEmpty)
                 }
-                PanelGroup("Other movement", caption: "Anything not in the list, or a baseline: stand still, walk, or type for a minute.") {
-                    HStack {
-                        TextField("Name, e.g. Baseline still", text: $custom).font(.bodyText).submitLabel(.done)
-                        NavigationLink { MotionLabRecordView(target: LabTarget(custom: custom)) } label: { Chevron() }
-                    }
-                    .panelRow()
-                }
-                TextField("Search exercises", text: $search)
-                    .font(.bodyText).padding(.horizontal, Metric.inset).frame(minHeight: Metric.row)
-                    .panel()
-                ForEach(ExerciseGroup.allCases) { group in
-                    let exercises = Exercise.all.filter { $0.group == group && (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search)) }
-                    if !exercises.isEmpty {
-                        PanelGroup(group.name) {
-                            ForEach(Array(exercises.enumerated()), id: \.element.id) { offset, exercise in
-                                if offset > 0 { Rule() }
-                                row(exercise)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(Metric.gutter)
-        }
-        .page()
-        .navigationTitle("Motion lab").navigationBarTitleDisplayMode(.inline)
-        .onAppear { lab.reload() }
-        .confirmationDialog("Delete every Motion Lab recording on this phone?", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Delete all", role: .destructive) { lab.deleteAll(); exported = nil }
-        }
-    }
-
-    private func row(_ exercise: Exercise) -> some View {
-        let count = lab.recordings(for: LabTarget(exercise)).count
-        return NavigationLink { MotionLabRecordView(target: LabTarget(exercise)) } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(exercise.name).font(.bodyText)
-                    Text(exercise.detectsReps ? "Band counts reps" : "Not tracked yet").font(.caption).foregroundStyle(Color.muted)
-                }
-                Spacer()
-                if count > 0 { Text("\(count) set\(count == 1 ? "" : "s")").font(.caption).foregroundStyle(Color.muted).monospacedDigit() }
-                Chevron()
-            }
-            .padding(.horizontal, Metric.inset).padding(.vertical, 8).frame(minHeight: Metric.rowTall).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct MotionLabRecordView: View {
-    let target: LabTarget
-    @ObservedObject private var lab = MotionLab.shared
-    @ObservedObject private var controller = SessionController.shared
-
-    private var streaming: Bool { controller.snapshot.state == .streaming }
-    private var recordingHere: Bool { lab.active?.exerciseID == target.id }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(target.name).font(.display)
-                    Text(detectorText).font(.caption).foregroundStyle(Color.muted)
-                }
-                if let draft = lab.draft, draft.exerciseID == target.id {
-                    LabelForm(meta: draft)
-                } else if recordingHere {
-                    recording
-                } else {
-                    idle
-                }
-                let sets = lab.recordings(for: target)
-                if !sets.isEmpty {
-                    PanelGroup("Recorded sets", caption: "Long-press a set to delete it.") {
-                        ForEach(Array(sets.enumerated()), id: \.element.id) { offset, meta in
+                if !lab.recordings.isEmpty {
+                    PanelGroup("Workouts", caption: "Swipe a workout left, or touch and hold it, to delete its data.") {
+                        ForEach(Array(lab.recordings.enumerated()), id: \.element.id) { offset, meta in
                             if offset > 0 { Rule() }
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(meta.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.bodyText)
+                                    Text("\(meta.workoutName) · \(meta.startedAt.formatted(date: .abbreviated, time: .shortened))").font(.bodyText)
                                     Text(summary(meta)).font(.caption).foregroundStyle(Color.muted)
                                 }
                                 Spacer()
                             }
                             .padding(.horizontal, Metric.inset).padding(.vertical, 8).frame(minHeight: Metric.rowTall).contentShape(Rectangle())
-                            .contextMenu { Button("Delete set", role: .destructive) { lab.delete(meta) } }
+                            .contextMenu { Button("Delete data", role: .destructive) { lab.delete(meta); exported = nil } }
+                            .swipeToDelete { lab.delete(meta); exported = nil }
                         }
                     }
                 }
@@ -134,115 +71,43 @@ struct MotionLabRecordView: View {
             .padding(Metric.gutter)
         }
         .page()
-        .navigationTitle("Record").navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(lab.active != nil || lab.draft != nil)
-    }
-
-    private var detectorText: String {
-        guard let e = target.exercise else { return "Custom movement · no detector" }
-        switch e.signal {
-        case .swing(let high, let low)?: return "Band detector: forearm swing \(Int(high))° / reset \(Int(low))°"
-        case .burst(let on, let off)?: return "Band detector: gyro burst \(Int(on)) / reset \(Int(off))"
-        case nil: return e.measure == .seconds ? "Timed · no band detector yet" : "No band detector yet"
+        .navigationTitle("Workout data").navigationBarTitleDisplayMode(.inline)
+        .onAppear { lab.reload() }
+        .confirmationDialog("Delete all recorded workout data on this phone?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Delete all", role: .destructive) { lab.deleteAll(); exported = nil }
+        } message: {
+            Text("Your workout history stays. Only the raw band recordings are removed.")
         }
     }
 
-    private var idle: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Press Start, do one normal set, then press Stop and enter how many reps you really did. Record a few sets, ideally with different weights and speeds. Tap Mark at any moment worth noting (e.g. the bottom of each rep).")
-                .font(.bodyText).foregroundStyle(Color.muted).fixedSize(horizontal: false, vertical: true)
-            if let problem = lab.problem { Text(problem).font(.caption).foregroundStyle(Color.destructive) }
-            Button("Start set") { lab.start(target, hand: controller.snapshot.hand) }
-                .buttonStyle(.primary)
-                .disabled(!streaming || lab.active != nil)
-            if !streaming { Text("Connect the band first.").font(.caption).foregroundStyle(Color.muted) }
-            if lab.active != nil { Text("Another set is recording: \(lab.active!.exerciseName).").font(.caption).foregroundStyle(Color.muted) }
-        }
-    }
-
-    private var recording: some View {
+    private func live(_ active: LabMeta) -> some View {
         let live = lab.live
-        return VStack(alignment: .leading, spacing: 20) {
-            if let started = lab.active?.startedAt {
-                Text(timerInterval: started...Date.distantFuture, countsDown: false)
-                    .font(.geist(56, .medium, relativeTo: .largeTitle)).monospacedDigit()
-            }
-            PanelGroup("Live") {
-                if target.exercise?.detectsReps == true {
-                    ValueRow("Detector reps") { Text("\(live.counts.detectorReps)").monospacedDigit() }
-                    Rule()
-                }
-                ValueRow("Gyroscope") { Text(rate(live.gyroHz, live.counts.gyro)).monospacedDigit() }
+        return PanelGroup("Recording now", caption: active.workoutName) {
+            ValueRow("Elapsed") { Text(timerInterval: active.startedAt...Date.distantFuture, countsDown: false).monospacedDigit() }
+            Rule()
+            ValueRow("Gyroscope") { Text(rate(live.gyroHz, live.counts.gyro)).monospacedDigit() }
+            Rule()
+            ValueRow("Orientation") { Text(rate(live.orientationHz, live.counts.orientation)).monospacedDigit() }
+            Rule()
+            ValueRow("EMG") { Text(rate(live.emgHz, live.counts.emgBatches * 16)).monospacedDigit() }
+            Rule()
+            EMGMeter(levels: live.counts.emgLevel).padding(Metric.inset)
+            if !live.counts.gaps.isEmpty {
                 Rule()
-                ValueRow("Orientation") { Text(rate(live.orientationHz, live.counts.orientation)).monospacedDigit() }
-                Rule()
-                ValueRow("EMG") { Text(rate(live.emgHz, live.counts.emgBatches * 16)).monospacedDigit() }
-                Rule()
-                EMGMeter(levels: live.counts.emgLevel).padding(Metric.inset)
-                if !live.counts.gaps.isEmpty {
-                    Rule()
-                    ValueRow("Sequence gaps") { Text(live.counts.gaps.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: " · ")).monospacedDigit() }
-                }
+                ValueRow("Sequence gaps") { Text(live.counts.gaps.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: " · ")).monospacedDigit() }
             }
-            if !streaming { Text("Band disconnected — samples will resume when it reconnects.").font(.caption).foregroundStyle(Color.destructive) }
-            HStack(spacing: 12) {
-                Button("Mark (\(live.counts.marks))") { lab.mark() }.buttonStyle(.secondary)
-                Button("Stop") { lab.stop() }.buttonStyle(.primary)
-            }
-            .sensoryFeedback(.impact(weight: .light), trigger: live.counts.marks)
         }
     }
 
     private func rate(_ hz: Double, _ total: Int) -> String { "\(Int(hz.rounded())) Hz · \(total)" }
 
     private func summary(_ meta: LabMeta) -> String {
-        var parts: [String] = []
-        if let reps = meta.actualReps { parts.append("\(reps) reps") }
-        if let held = meta.heldSeconds { parts.append("\(held) s") }
-        if let detected = meta.detectorReps { parts.append("detector \(detected)") }
-        if !meta.weight.isEmpty { parts.append(meta.weight) }
+        var parts = ["\(meta.sets.count) set\(meta.sets.count == 1 ? "" : "s")", "\(Int((meta.duration / 60).rounded())) min"]
         parts.append(meta.emgBatches > 0 ? "EMG" : "no EMG")
-        if !meta.saved { parts.append("unlabelled") }
+        parts.append(ByteCountFormatter.string(fromByteCount: meta.bytes, countStyle: .file))
+        if !meta.complete { parts.append("incomplete") }
+        if meta.capped { parts.append("capped") }
         return parts.joined(separator: " · ")
-    }
-}
-
-/// Ground truth for a finished set.
-private struct LabelForm: View {
-    @State var meta: LabMeta
-    @ObservedObject private var lab = MotionLab.shared
-    private var timed: Bool { meta.measure == Measure.seconds.rawValue }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            PanelGroup("How did the set go?", caption: "\(Int(meta.duration.rounded())) s recorded\(meta.detectorReps.map { " · the band detector counted \($0)" } ?? ""). \(meta.emgBatches > 0 ? "EMG captured." : "No EMG received.")") {
-                if timed {
-                    Stepper(value: Binding(get: { meta.heldSeconds ?? 0 }, set: { meta.heldSeconds = $0 }), in: 0...3600, step: 5) {
-                        HStack { Text("Held").font(.bodyText); Spacer(); Text("\(meta.heldSeconds ?? 0) s").font(.bodyText).monospacedDigit() }
-                    }
-                    .panelRow()
-                } else {
-                    Stepper(value: Binding(get: { meta.actualReps ?? 0 }, set: { meta.actualReps = $0 }), in: 0...500) {
-                        HStack { Text("Reps actually done").font(.bodyText); Spacer(); Text("\(meta.actualReps ?? 0)").font(.bodyText).monospacedDigit() }
-                    }
-                    .panelRow()
-                }
-                Rule()
-                TextField("Weight, e.g. 12 kg dumbbells", text: $meta.weight).font(.bodyText).panelRow()
-                Rule()
-                Picker("Band arm", selection: $meta.bandArm) {
-                    Text("Band arm moved").tag("moving")
-                    Text("Other arm only").tag("still")
-                    Text("Both arms").tag("both")
-                }
-                .pickerStyle(.segmented).padding(Metric.inset)
-                Rule()
-                TextField("Notes: tempo, form, grip, anything odd", text: $meta.notes, axis: .vertical)
-                    .font(.bodyText).lineLimit(1...4).padding(.horizontal, Metric.inset).padding(.vertical, 12)
-            }
-            Button("Save set") { lab.save(meta) }.buttonStyle(.primary)
-            Button("Discard set", role: .destructive) { lab.discardDraft() }.buttonStyle(.quiet).frame(maxWidth: .infinity)
-        }
     }
 }
 

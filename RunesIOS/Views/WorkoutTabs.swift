@@ -214,7 +214,7 @@ struct JournalTab: View {
             .padding(.horizontal, Metric.gutter).padding(.top, 8).padding(.bottom, 40)
         }
         .confirmationDialog("Delete this workout?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible, presenting: deleting) { record in
-            Button("Delete workout", role: .destructive) { store.deleteRecord(record.id) }
+            Button("Delete workout", role: .destructive) { withAnimation(.entrance) { store.deleteRecord(record.id) } }
         }
     }
 
@@ -567,6 +567,7 @@ struct WorkoutSettingsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var clearing = false
     @State private var choosing: WorkoutCommand?
+    @State private var choosingSound: WorkoutCue?
 
     var body: some View {
         NavigationStack {
@@ -582,6 +583,7 @@ struct WorkoutSettingsScreen: View {
                     } footer: {
                         Note("Lower needs a bigger movement for each rep. Only exercises marked with a waveform are counted; the rest log your target. Detection hasn’t been tuned on a real band yet.")
                     }
+                    soundsBlock
                     Block {
                         HairlineSegments(selection: Binding(get: { store.unit }, set: store.setUnit),
                                          options: WeightUnit.allCases, title: \.title)
@@ -616,6 +618,65 @@ struct WorkoutSettingsScreen: View {
             }
         }
         .tint(Color.ink)
+    }
+
+    private var soundsBlock: some View {
+        let sounds = store.sounds
+        return Block {
+            Toggle(isOn: Binding(get: { sounds.on }, set: { on in store.setSounds { $0.on = on } })) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Play cues").font(.bodyText)
+                    Text("While a workout runs, also with your phone locked and on silent.").font(.caption).foregroundStyle(Color.muted)
+                }
+            }
+            .padding(.vertical, 12)
+            Hairline(inset: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Volume").font(.bodyText)
+                Slider(value: Binding(get: { sounds.volume }, set: { v in store.setSounds { $0.volume = v } }), in: 0...1) { editing in
+                    let sounds = store.sounds
+                    if !editing, let voice = WorkoutCue.allCases.lazy.compactMap({ sounds[$0] }).first {
+                        ScoreAudio.shared.preview(voice, volume: sounds.volume)
+                    }
+                }
+                .accessibilityLabel("Volume")
+            }
+            .padding(.vertical, 12)
+            ForEach(WorkoutCue.allCases) { cue in
+                Hairline(inset: 0)
+                soundRow(cue, sounds[cue])
+            }
+        } header: {
+            Heading("Cues")
+        } footer: {
+            Note("Choose None to keep a moment silent. Reps and targets sound only for exercises the band counts, and for holds. Choose a sound or a band vibration; choosing one plays it.")
+        }
+        .sheet(item: $choosingSound) { cue in
+            SoundPickerSheet(title: cue.title, selected: store.sounds[cue]) { voice in
+                store.setSounds { $0[cue] = voice }
+                if let voice { ScoreAudio.shared.preview(voice, volume: max(0.3, store.sounds.volume)) }
+            }
+        }
+    }
+
+    private func soundRow(_ cue: WorkoutCue, _ voice: SoundVoice?) -> some View {
+        Button { choosingSound = cue } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cue.title).font(.bodyText)
+                    Text(cue.detail).font(.caption).foregroundStyle(Color.muted)
+                }
+                Spacer(minLength: 8)
+                Text(voice?.label ?? "None").font(.label).foregroundStyle(Color.muted)
+                LucideIcon(.chevronRight, size: 14).foregroundStyle(Color.faint)
+            }
+            .padding(.vertical, 12).contentShape(Rectangle())
+        }
+        .buttonStyle(PressRow())
+        .disabled(!store.sounds.on)
+        .opacity(store.sounds.on ? 1 : 0.45)
+        .accessibilityLabel("\(cue.title), \(voice?.label ?? "None")")
+        .accessibilityHint("Chooses the cue.")
     }
 
     private var gestures: some View {

@@ -21,8 +21,8 @@ struct MappingsScreen: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: 28) {
-                    profileBar
                     LiveStrip(recent: store.recent)
+                    profileBar
                     MappingGroup("Gestures") {
                         ForEach(Array(store.active.gestures.enumerated()), id: \.element.id) { index, mapping in
                             if index > 0 { RowDivider() }
@@ -99,6 +99,9 @@ struct MappingsScreen: View {
         return comboTitle(combos[index], index)
     }
 
+    /// A profile is its icon alone here, so the tiles are large enough to tell apart and to hit.
+    private static let profileTile: CGFloat = 56
+
     private var profileBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel("Profile").padding(.leading, 2)
@@ -107,16 +110,15 @@ struct MappingsScreen: View {
                     ForEach(store.library.profiles) { profile in
                         let active = profile.id == store.library.activeID
                         Button { store.selectProfile(profile.id) } label: {
-                            HStack(spacing: 6) {
-                                LucideIcon(profile: profile.icon, size: 15)
-                                Text(profile.name).font(.label).lineLimit(1)
-                            }
-                            .padding(.horizontal, 12).frame(minHeight: 36)
-                            .foregroundStyle(active ? Color.paper : Color.ink)
-                            .background(active ? Color.ink : Color.paper, in: RoundedRectangle(cornerRadius: Metric.control))
-                            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: active ? 0 : Metric.hairline))
+                            LucideIcon(profile: profile.icon, size: 24)
+                                .frame(width: Self.profileTile, height: Self.profileTile)
+                                .foregroundStyle(active ? Color.paper : Color.ink)
+                                .background(active ? Color.ink : Color.paper, in: RoundedRectangle(cornerRadius: Metric.panel))
+                                .overlay(RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.rule, lineWidth: active ? 0 : Metric.hairline))
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(profile.name)
                         .accessibilityAddTraits(active ? .isSelected : [])
                         .contextMenu {
                             menuItem("Edit name and icon", .pencil) { editingProfile = .rename(profile) }
@@ -127,9 +129,10 @@ struct MappingsScreen: View {
                         }
                     }
                     Button { editingProfile = .new } label: {
-                        LucideIcon(.plus, size: 16)
-                            .frame(width: 36, height: 36)
-                            .overlay(RoundedRectangle(cornerRadius: Metric.control).strokeBorder(Color.rule, lineWidth: Metric.hairline))
+                        LucideIcon(.plus, size: 20).foregroundStyle(Color.muted)
+                            .frame(width: Self.profileTile, height: Self.profileTile)
+                            .overlay(RoundedRectangle(cornerRadius: Metric.panel).strokeBorder(Color.rule, style: StrokeStyle(lineWidth: Metric.hairline, dash: [4, 4])))
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Add profile")
@@ -232,15 +235,21 @@ private struct StepChips: View {
     }
 }
 
-/// The last five gestures; the ones that ran a mapping are filled.
+/// The last five gestures; the ones that ran a mapping are filled. No words: until a gesture
+/// arrives it shows the empty places they will take.
 private struct LiveStrip: View {
     let recent: [MappingStore.RecentGesture]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionLabel("Live").padding(.leading, 2)
             HStack(spacing: 6) {
                 if recent.isEmpty {
-                    Text("Make a gesture").font(.bodyText).foregroundStyle(Color.muted)
+                    ForEach(0..<5, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: Metric.control)
+                            .strokeBorder(Color.faint, style: StrokeStyle(lineWidth: Metric.hairline, dash: [3, 3]))
+                            .frame(width: 34, height: 30)
+                            .transition(.opacity)
+                    }
+                    .accessibilityHidden(true)
                 }
                 ForEach(recent) { item in
                     StepIcon(step: item.step, size: 18)
@@ -256,6 +265,8 @@ private struct LiveStrip: View {
             .animation(.standard, value: recent)
             .padding(.horizontal, Metric.inset).frame(minHeight: Metric.rowTall)
             .panel()
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Recent gestures")
         }
     }
 }
@@ -343,6 +354,24 @@ struct MappingEditor: View {
 
     private struct EditingIndex: Identifiable { let id: Int }
 
+    /// An action row known by what it does and which copy it is, not by its place, so the rows
+    /// under a removed one keep their identity and slide up.
+    private struct ActionRowItem: Identifiable {
+        struct ID: Hashable { let action: MappingAction; let copy: Int }
+        let id: ID
+        let index: Int
+        let action: MappingAction
+
+        static func rows(_ actions: [MappingAction]) -> [ActionRowItem] {
+            var seen: [MappingAction: Int] = [:]
+            return actions.enumerated().map { index, action in
+                let copy = seen[action, default: 0]
+                seen[action] = copy + 1
+                return ActionRowItem(id: ID(action: action, copy: copy), index: index, action: action)
+            }
+        }
+    }
+
     private func edit(_ change: (inout Mapping) -> Void) {
         guard var m = mapping else { return }
         change(&m)
@@ -403,7 +432,8 @@ struct MappingEditor: View {
     @ViewBuilder private func actionsSection(_ mapping: Mapping) -> some View {
         let caption = mapping.actions.count > 1 ? "Runs in order, each after the one before finishes." : "Add more than one to link them together."
         MappingGroup(mapping.actions.count > 1 ? "Actions" : "Action", caption: caption) {
-            ForEach(Array(mapping.actions.enumerated()), id: \.offset) { index, action in
+            ForEach(ActionRowItem.rows(mapping.actions)) { row in
+                let index = row.index, action = row.action
                 HStack(spacing: 12) {
                     Button { editingAction = index } label: {
                         HStack(spacing: 12) {

@@ -140,7 +140,26 @@ struct WristMotionTests {
                 near(length(point - SIMD3((1 - 2 * hand) * WristFlow.handOffset, 6, 0)), WristFlow.radius)
             }
         }
+        for left in [true, false] {
+            var motion = WristMotion()
+            motion.rest(left: !left, at: start)
+            motion.begin(left: left, at: start.addingTimeInterval(0.4))
+            let arrivals = motion.arrivals()
+            precondition(arrivals.count == 8 && arrivals == arrivals.sorted())
+            precondition(arrivals[0] > 0 && arrivals[7] < WristMotion.orbitDuration)
+            for (bead, time) in arrivals.enumerated() {
+                let frame = motion.frame(at: start.addingTimeInterval(0.4 + time))
+                near(frame.distance - Double(bead) * WristFlow.spacing, WristFlow.length, 0.001)
+            }
+            // The other wrist is fully chosen as the last bead lands.
+            near(motion.frame(at: start.addingTimeInterval(0.4 + arrivals[7])).handBlend, left ? 1 : 0, 0.001)
+            print("Arrivals toward the \(left ? "left" : "right"): \(arrivals.map { String(format: "%.2f", $0) }.joined(separator: " "))")
+            motion.rest(left: left, at: start.addingTimeInterval(4))
+            motion.begin(left: left, at: start.addingTimeInterval(5))
+            precondition(motion.arrivals().isEmpty, "Staying on one wrist has no arrivals")
+        }
         var waiting = WristMotion()
+        precondition(waiting.arrivals().isEmpty)
         waiting.begin(left: true, at: start)
         precondition(waiting.frame(at: start.addingTimeInterval(5)).velocity > 0)
         near(waiting.frame(at: start.addingTimeInterval(5)).pulse, 0)
@@ -148,6 +167,6 @@ struct WristMotionTests {
         precondition(!waiting.active)
         near(waiting.frame(at: start.addingTimeInterval(6)).handBlend, 0)
         near(waiting.frame(at: start.addingTimeInterval(6)).velocity, 0)
-        print("Wrist flow: path speed, tangent joins, both directions, replies, continuous idle orbit and cancellation passed.")
+        print("Wrist flow: path speed, tangent joins, both directions, replies, arrivals, continuous idle orbit and cancellation passed.")
     }
 }

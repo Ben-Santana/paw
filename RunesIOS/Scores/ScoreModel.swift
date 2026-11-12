@@ -73,6 +73,20 @@ struct ScoreRules: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// What a player's next point would win, in rising order.
+enum ScorePoint: Int, Comparable, Hashable, Sendable {
+    case game, set, match
+
+    var name: String {
+        switch self {
+        case .game: "Game point"
+        case .set: "Set point"
+        case .match: "Match point"
+        }
+    }
+    static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+}
+
 /// A game of two to six players kept from the band. Pure value type, so it is tested
 /// without a band.
 struct ScoreGame: Codable, Equatable, Sendable {
@@ -184,12 +198,15 @@ struct ScoreGame: Codable, Equatable, Sendable {
 
     /// What the player's next point would win, when it would win something: "Game point",
     /// "Set point" or "Match point".
-    func pointName(_ index: Int) -> String? {
+    func pointName(_ index: Int) -> String? { point(index)?.name }
+
+    /// What the player's next point would win, when it would win something.
+    func point(_ index: Int) -> ScorePoint? {
         guard toGo(index) == 1 else { return nil }
         var next = self
         next.change(index, by: 1)
-        if next.winner == index { return "Match point" }
-        return next.players[index].sets > players[index].sets ? "Set point" : "Game point"
+        if next.winner == index { return .match }
+        return next.players[index].sets > players[index].sets ? .set : .game
     }
 
     /// Switches to another game type. Everyone starts from zero.
@@ -475,8 +492,15 @@ struct ScoreSounds: Codable, Hashable, Sendable {
     /// Nil plays nothing for that change.
     var add: SoundVoice? = standardAdd
     var take: SoundVoice? = standardTake
+    /// Played when a point wins a game, or a set or the match. The stored names keep older saves.
+    var gamePoint: SoundVoice? = standardGamePoint
+    var setPoint: SoundVoice? = standardSetPoint
+    static let standardGamePoint = SoundVoice.bells, standardSetPoint = SoundVoice.sparkle
     /// The set of player sounds; nil plays nothing when a player is selected.
     var players: ScorePlayerSounds? = .mallets
+    /// Opt in: the phone buzzes for each change, a single tap for a point and a double
+    /// one for a point taken away (`ScoreBuzz`).
+    var buzz = false
 
     /// Each player also has their own pitch (a pentatonic step up from G4), so voices that
     /// follow pitch are told apart twice over.
@@ -489,12 +513,16 @@ struct ScoreSounds: Codable, Hashable, Sendable {
         players.map { $0.voices[min(max(index, 0), $0.voices.count - 1)] }
     }
 
-    private enum Keys: String, CodingKey { case on, volume, add, take, players = "playerSounds" }
+    /// Winning the match shares the set sound: in one-set games the match is the only set.
+    func voice(for point: ScorePoint) -> SoundVoice? { point == .game ? gamePoint : setPoint }
+
+    private enum Keys: String, CodingKey { case on, volume, add, take, buzz, gamePoint, setPoint, players = "playerSounds" }
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         on = (try? c.decode(Bool.self, forKey: .on)) ?? true
         volume = min(1, max(0, (try? c.decode(Double.self, forKey: .volume)) ?? 0.8))
+        buzz = (try? c.decode(Bool.self, forKey: .buzz)) ?? false
         // A missing key is an older save and gets the default; null is a chosen "None".
         func value<T: Decodable>(_ key: Keys, _ fallback: T) -> T? {
             guard c.contains(key) else { return fallback }
@@ -503,15 +531,20 @@ struct ScoreSounds: Codable, Hashable, Sendable {
         }
         add = value(.add, Self.standardAdd)
         take = value(.take, Self.standardTake)
+        gamePoint = value(.gamePoint, Self.standardGamePoint)
+        setPoint = value(.setPoint, Self.standardSetPoint)
         players = value(.players, ScorePlayerSounds.mallets)
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(on, forKey: .on)
         try c.encode(volume, forKey: .volume)
+        try c.encode(buzz, forKey: .buzz)
         // Null when None, so it isn't read back as the default.
         try c.encode(add, forKey: .add)
         try c.encode(take, forKey: .take)
+        try c.encode(gamePoint, forKey: .gamePoint)
+        try c.encode(setPoint, forKey: .setPoint)
         try c.encode(players, forKey: .players)
     }
 }
@@ -557,6 +590,19 @@ enum ScoreCue: Hashable, Sendable {
     case add, subtract
     /// A player became the selected one; carries their index.
     case select(Int)
+    /// A point won a game, a set or the match; follows that point's own cue.
+    case point(ScorePoint)
+
+    /// What the point just added won: the game, the set or the match. Nil for a point that
+    /// won nothing, and for any point taken back (taking back a winning point undoes it).
+    static func point(from old: ScoreGame, to new: ScoreGame) -> ScorePoint? {
+        guard old.players.map(\.id) == new.players.map(\.id), new.progress > old.progress else { return nil }
+        if let winner = new.winner, old.winner == nil, new.players.indices.contains(winner) { return .match }
+        // Winning a set puts everyone's games back to zero, so a set shows only in the sets.
+        if new.players.indices.contains(where: { new.players[$0].sets > old.players[$0].sets }) { return .set }
+        if new.players.indices.contains(where: { new.players[$0].games > old.players[$0].games }) { return .game }
+        return nil
+    }
 
     /// What changed from `old` to `new`: a score going up or down wins over the selection
     /// (changing a player also selects them). Nil when nothing a listener cares about changed.

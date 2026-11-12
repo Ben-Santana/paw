@@ -108,6 +108,10 @@ struct SnapshotGallery: View {
         } else if name == "applications" {
             ApplicationsScreen(workouts: PreviewFixtures.workouts(running: false), scores: ScoreStore(preview: PreviewFixtures.score(7, 4)),
                                cook: PreviewFixtures.cook(), capture: PreviewFixtures.capture())
+        } else if name == "reels" {
+            NavigationStack { ReelsScreen(store: .shared) }
+        } else if name == "reels-settings" {
+            ReelsSettingsScreen(store: .shared)
         } else if name == "cook" {
             NavigationStack { CookScreen(store: PreviewFixtures.cook(), path: .constant([])) }
         } else if name == "recipe" {

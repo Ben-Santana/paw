@@ -1,36 +1,57 @@
 import Foundation
 import UIKit
 
-// Motion Lab: records every raw band sample during a set, labelled with the exercise and the
-// reps actually done, so detectors can be tuned and new ones built from real data offline.
+// Workout data: while a workout runs, every raw band sample (gyro, orientation, gestures and
+// 8-channel EMG) is written to disk, with the workout's own events (set start, reps counted,
+// set logged) on the same clock, so detectors can be tuned and built offline from real sessions.
 // Nothing here changes how workouts count reps.
 
-/// What a recording is of: a catalog exercise, or a free-form name.
-struct LabTarget: Hashable, Identifiable {
-    let id: String
-    let name: String
-    let exercise: Exercise?
-    init(_ exercise: Exercise) { id = exercise.id; name = exercise.name; self.exercise = exercise }
-    init(custom name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.name = trimmed.isEmpty ? "Other movement" : trimmed
-        id = "custom:" + self.name.lowercased().replacingOccurrences(of: " ", with: "-")
-        exercise = nil
+/// One logged set, as stored in meta.json.
+struct LabSet: Codable, Hashable {
+    var exerciseID: String
+    var exerciseName: String
+    var group: String
+    var equipment: String
+    var measure: String
+    var primaryMuscles: [String]
+    /// The shipping detector at recording time, e.g. "swing high=70 low=30"; nil when none.
+    var detector: String?
+    var label: String
+    var target: Int
+    var weight: Double?
+    /// What the workout logged: reps (detector count, or the target when the band can't count),
+    /// or seconds held.
+    var logged: Int
+    /// True when `logged` is the target because the band has no detector for this exercise.
+    var assumed: Bool
+    var loggedAt: Date
+
+    init(_ log: SetLog) {
+        let e = log.exercise
+        exerciseID = e.id; exerciseName = e.name; group = e.group.rawValue; equipment = e.equipment.rawValue
+        measure = e.measure.rawValue; primaryMuscles = e.primary.map(\.rawValue)
+        detector = Self.detector(e)
+        label = log.slot.label; target = log.slot.target; weight = log.slot.weight
+        logged = log.reps; assumed = log.slot.assumed; loggedAt = log.at
+    }
+
+    static func detector(_ e: Exercise) -> String? {
+        switch e.signal {
+        case .swing(let high, let low)?: "swing high=\(high) low=\(low)"
+        case .burst(let on, let off)?: "burst on=\(on) off=\(off)"
+        case nil: nil
+        }
     }
 }
 
-/// meta.json in each recording folder.
+/// meta.json in each workout's folder.
 struct LabMeta: Codable, Identifiable, Hashable {
     var id: String
-    var exerciseID: String
-    var exerciseName: String
-    var group: String?
-    var equipment: String?
-    var measure: String?
-    var primaryMuscles: [String] = []
-    /// The shipping detector at recording time, e.g. "swing high=70 low=30"; nil when none.
-    var detector: String?
+    var workoutName: String
+    var planID: String
+    var workoutStarted: Date
     var bandHand: String?
+    var weightUnit: String
     var startedAt: Date
     var endedAt: Date?
     var startUptime: Double
@@ -40,122 +61,137 @@ struct LabMeta: Codable, Identifiable, Hashable {
     var emgBatches = 0
     var gestureEvents = 0
     var sequenceGaps: [String: Int] = [:]
-    var marks = 0
-    var detectorReps: Int?
-    /// Ground truth entered after the set.
-    var actualReps: Int?
-    var heldSeconds: Int?
-    var weight = ""
-    /// "moving", "still" or "both": did the arm wearing the band do the movement?
-    var bandArm = "moving"
-    var notes = ""
+    var sets: [LabSet] = []
     var emgStatus = ""
+    /// Raw recording stopped at the time limit before the workout ended.
+    var capped = false
     var appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-    var saved = false
+    /// False until the workout ends; stays false if the app quit mid-workout.
+    var complete = false
+    /// Folder size on disk; not saved.
+    var bytes: Int64 = 0
 
-    var duration: TimeInterval { (endUptime ?? startUptime) - startUptime }
+    private enum CodingKeys: String, CodingKey {
+        case id, workoutName, planID, workoutStarted, bandHand, weightUnit, startedAt, endedAt, startUptime, endUptime,
+             gyroSamples, orientationSamples, emgBatches, gestureEvents, sequenceGaps, sets, emgStatus, capped, appVersion, complete
+    }
+
+    var duration: TimeInterval { (endUptime ?? ProcessInfo.processInfo.systemUptime) - startUptime }
+}
+
+/// What a running workout tells the recorder. Sent by `WorkoutStore`.
+enum WorkoutTrace {
+    case began(WorkoutRun)
+    case event(String, String)
+    case ended(WorkoutRun)
 }
 
 @MainActor
 final class MotionLab: ObservableObject {
     static let shared = MotionLab()
     nonisolated static let recorder = MotionRecorder()
+    private static let enabledKey = "runes.workoutdata.enabled"
+    /// Raw recording stops after this long even if the workout is never ended.
+    static let limit: TimeInterval = 3 * 3600
 
     struct Live: Equatable {
         var gyroHz = 0.0, orientationHz = 0.0, emgHz = 0.0
         var counts = MotionRecorder.Counts()
     }
 
+    @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) } }
     @Published private(set) var recordings: [LabMeta] = []
-    /// The set being recorded.
+    /// The workout being recorded.
     @Published private(set) var active: LabMeta?
-    /// A finished set waiting for its rep count.
-    @Published var draft: LabMeta?
     @Published private(set) var live = Live()
-    @Published var emgStatus = "EMG turns on when a recording starts."
+    @Published var emgStatus = "EMG turns on when a workout starts."
     @Published private(set) var problem: String?
     /// Asks the session for motion + EMG streams while true.
     var onDemand: ((Bool) -> Void)?
     private var ticker: Task<Void, Never>?
 
-    let root: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("MotionLab", isDirectory: true)
+    let root: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("WorkoutData", isDirectory: true)
 
-    private init() { reload() }
+    private init() {
+        enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        reload()
+    }
 
     func reload() {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         recordings = folders.compactMap { folder in
-            guard let data = try? Data(contentsOf: folder.appendingPathComponent("meta.json")) else { return nil }
-            return try? decoder.decode(LabMeta.self, from: data)
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent("meta.json")),
+                  var meta = try? decoder.decode(LabMeta.self, from: data) else { return nil }
+            meta.bytes = Self.size(of: folder)
+            return meta
         }
-        .filter { $0.id != active?.id && $0.id != draft?.id }
+        .filter { $0.id != active?.id }
         .sorted { $0.startedAt > $1.startedAt }
     }
 
-    func recordings(for target: LabTarget) -> [LabMeta] { recordings.filter { $0.exerciseID == target.id } }
+    func trace(_ trace: WorkoutTrace, hand: Handedness?, unit: WeightUnit) {
+        switch trace {
+        case .began(let run): begin(run, hand: hand, unit: unit)
+        case .event(let kind, let detail): if active != nil { Self.recorder.event(kind, detail) }
+        case .ended(let run): finish(run)
+        }
+    }
 
-    func start(_ target: LabTarget, hand: Handedness?) {
-        guard active == nil, draft == nil else { return }
+    private func begin(_ run: WorkoutRun, hand: Handedness?, unit: WeightUnit) {
+        if active != nil { stopRecording(capped: false) }
+        guard enabled else { return }
         problem = nil
         let now = Date(), uptime = ProcessInfo.processInfo.systemUptime
         let stamp = now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted).dateSeparator(.omitted))
-        let id = "\(stamp)_\(target.id.replacingOccurrences(of: ":", with: "-"))"
-        var meta = LabMeta(id: id, exerciseID: target.id, exerciseName: target.name, startedAt: now, startUptime: uptime)
-        if let e = target.exercise {
-            meta.group = e.group.rawValue; meta.equipment = e.equipment.rawValue; meta.measure = e.measure.rawValue
-            meta.primaryMuscles = e.primary.map(\.rawValue)
-            switch e.signal {
-            case .swing(let high, let low)?: meta.detector = "swing high=\(high) low=\(low)"
-            case .burst(let on, let off)?: meta.detector = "burst on=\(on) off=\(off)"
-            case nil: meta.detector = nil
-            }
-        }
-        meta.bandHand = hand?.rawValue
+        let slug = run.name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        let id = "\(stamp)_\(String(slug).prefix(40))"
+        let meta = LabMeta(id: id, workoutName: run.name, planID: run.planID, workoutStarted: run.started,
+                           bandHand: hand?.rawValue, weightUnit: unit.rawValue, startedAt: now, startUptime: uptime)
         do {
             let folder = root.appendingPathComponent(id, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Written with the phone locked, so files must stay writable after first unlock.
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                    attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
             try write(meta)
-            try Self.recorder.start(in: folder, exercise: target.exercise)
+            try Self.recorder.start(in: folder, exercise: nil)
         } catch {
             problem = "Could not start recording: \(error.localizedDescription)"
             return
         }
         active = meta
-        UIApplication.shared.isIdleTimerDisabled = true
+        Self.recorder.event("workout_start", "plan=\(run.planID) name=\(run.name) slots=\(run.remaining)")
         onDemand?(true)
         startTicker()
     }
 
-    func mark() { Self.recorder.event("mark", "") }
-
-    func stop() {
+    /// Ends the raw recording; the workout itself may carry on.
+    private func stopRecording(capped: Bool) {
         guard var meta = active else { return }
+        if capped { Self.recorder.event("capped", "time limit") }
         let counts = Self.recorder.stop()
         onDemand?(false)
         ticker?.cancel(); ticker = nil
-        UIApplication.shared.isIdleTimerDisabled = false
         meta.endedAt = Date(); meta.endUptime = ProcessInfo.processInfo.systemUptime
         meta.gyroSamples = counts.gyro; meta.orientationSamples = counts.orientation
         meta.emgBatches = counts.emgBatches; meta.gestureEvents = counts.gestures
-        meta.sequenceGaps = counts.gaps; meta.marks = counts.marks
-        meta.detectorReps = meta.detector == nil ? nil : counts.detectorReps
+        meta.sequenceGaps = counts.gaps
         meta.emgStatus = emgStatus
-        if meta.measure == Measure.seconds.rawValue { meta.heldSeconds = Int(meta.duration.rounded()) }
-        else { meta.actualReps = meta.detectorReps ?? 10 }
+        meta.capped = capped
         try? write(meta)
-        active = nil; draft = meta
+        active = nil
+        reload()
     }
 
-    func save(_ meta: LabMeta) {
-        var meta = meta; meta.saved = true
+    /// Saves the workout's logged sets into its recording, even one stopped at the time limit.
+    private func finish(_ run: WorkoutRun) {
+        if active?.workoutStarted == run.started { Self.recorder.event("workout_end", "sets=\(run.logs.count)") }
+        stopRecording(capped: false)
+        guard var meta = recordings.first(where: { $0.workoutStarted == run.started }) else { return }
+        meta.sets = run.logs.map(LabSet.init)
+        meta.complete = true
         do { try write(meta) } catch { problem = "Could not save: \(error.localizedDescription)" }
-        draft = nil; reload()
-    }
-
-    func discardDraft() {
-        if let draft { try? FileManager.default.removeItem(at: root.appendingPathComponent(draft.id)) }
-        draft = nil; reload()
+        reload()
     }
 
     func delete(_ meta: LabMeta) {
@@ -163,28 +199,39 @@ final class MotionLab: ObservableObject {
     }
 
     func deleteAll() {
-        guard active == nil else { return }
         for meta in recordings { try? FileManager.default.removeItem(at: root.appendingPathComponent(meta.id)) }
         reload()
     }
 
-    var totalBytes: Int64 {
-        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey])
+    var totalBytes: Int64 { recordings.reduce(0) { $0 + $1.bytes } }
+
+    private static func size(of folder: URL) -> Int64 {
+        let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey])
         var total: Int64 = 0
         while let url = files?.nextObject() as? URL { total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
         return total
     }
 
-    /// Zips every saved recording plus a README describing the formats.
+    /// Zips every finished recording plus a README describing the formats.
     func export() async -> URL? {
-        guard active == nil else { return nil }
         let root = self.root
+        let skip = active?.id
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try? Self.readme.write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
-        let name = "MotionLab-\(Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted).dateSeparator(.omitted))).zip"
+        let name = "WorkoutData-\(Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false).timeSeparator(.omitted).dateSeparator(.omitted))).zip"
         return await Task.detached(priority: .userInitiated) { () -> URL? in
+            // Copy finished recordings aside so a running workout's open files are never zipped.
+            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("WorkoutData-export", isDirectory: true)
+            try? FileManager.default.removeItem(at: staging)
+            do {
+                try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+                for item in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where item.lastPathComponent != skip {
+                    try FileManager.default.copyItem(at: item, to: staging.appendingPathComponent(item.lastPathComponent))
+                }
+            } catch { return nil }
+            defer { try? FileManager.default.removeItem(at: staging) }
             var result: URL?, coordinatorError: NSError?
-            NSFileCoordinator().coordinate(readingItemAt: root, options: .forUploading, error: &coordinatorError) { zip in
+            NSFileCoordinator().coordinate(readingItemAt: staging, options: .forUploading, error: &coordinatorError) { zip in
                 let target = FileManager.default.temporaryDirectory.appendingPathComponent(name)
                 try? FileManager.default.removeItem(at: target)
                 if (try? FileManager.default.copyItem(at: zip, to: target)) != nil { result = target }
@@ -195,7 +242,8 @@ final class MotionLab: ObservableObject {
 
     private func write(_ meta: LabMeta) throws {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(meta).write(to: root.appendingPathComponent(meta.id).appendingPathComponent("meta.json"), options: .atomic)
+        try encoder.encode(meta).write(to: root.appendingPathComponent(meta.id).appendingPathComponent("meta.json"),
+                                       options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     private func startTicker() {
@@ -204,8 +252,9 @@ final class MotionLab: ObservableObject {
         ticker = Task { [weak self] in
             var previous = MotionRecorder.Counts(), previousTime = ProcessInfo.processInfo.systemUptime
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .milliseconds(1000))
                 guard let self, !Task.isCancelled else { return }
+                if let active = self.active, active.duration > Self.limit { self.stopRecording(capped: true); return }
                 let counts = Self.recorder.snapshot, now = ProcessInfo.processInfo.systemUptime
                 let dt = max(now - previousTime, 0.001)
                 self.live = Live(gyroHz: Double(counts.gyro - previous.gyro) / dt,
@@ -218,15 +267,25 @@ final class MotionLab: ObservableObject {
     }
 
     static let readme = """
-    # Runes Motion Lab export
+    # Runes workout data export
 
-    One folder per recorded set: `<timestamp>_<exerciseID>/`.
+    One folder per workout: `<timestamp>_<workout-name>/`. Recording runs from workout start to
+    workout end (at most 3 hours), so rests between sets are included.
 
     ## meta.json
-    Exercise, the shipping detector at the time (`detector`, nil = none), band hand, start/end
-    (wall clock and phone uptime), sample counts, sequence gaps per stream, the detector's rep count
-    (`detectorReps`), and ground truth entered after the set: `actualReps` or `heldSeconds`,
-    `weight`, `bandArm` (moving / still / both), `notes`. `saved` false = app quit before labelling.
+    Workout name and plan, band hand, weight unit, start/end (wall clock and phone uptime), sample
+    counts, sequence gaps per stream, EMG status, and `sets`: every set the workout logged, with
+    exercise, muscles, the shipping detector (`detector`, nil = none), target, weight, and `logged`
+    (reps the detector counted, seconds held for timed exercises, or the target when `assumed`).
+    `logged` is what the app counted, not hand-checked ground truth.
+    `complete` false = the app quit before the workout ended (sets missing; the last ~128 KB per
+    stream may be lost). `capped` true = raw recording stopped at the time limit.
+
+    ## events.csv
+    `phone_uptime_s, kind, detail` on the same clock as the samples:
+    `workout_start`, `command` (start/stop/repeatLast/skip and the phase change), `set_start`
+    (exercise, set, target, weight), `rep` (the shipping detector counted a rep; running count),
+    `set_logged` (exercise, logged value), `workout_end`, `capped`, `stop`.
 
     ## gyro.csv
     `phone_uptime_s, seq, band_ts_us, x, y, z` — raw signed 16-bit gyroscope counts (scale uncalibrated).
@@ -242,9 +301,5 @@ final class MotionLab: ObservableObject {
 
     ## gestures.csv
     `phone_uptime_s, seq, band_ts_us, finger, action, derived, synthetic` — the band's own gesture events.
-
-    ## events.csv
-    `phone_uptime_s, kind, detail` — `start`, `stop`, `mark` (user tapped Mark), `detector_rep` (the
-    shipping detector counted a rep at this moment).
     """
 }

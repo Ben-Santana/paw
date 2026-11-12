@@ -72,8 +72,8 @@ Base unit 4. Page gutter 20. Section gap 28 (panels) or 36 (ledgers). Row inset 
 | --- | --- | --- |
 | `Metric.hairline` | 1 | Every rule and border |
 | `Metric.chip` | 4 | Step chips, tiny badges |
-| `Metric.control` | 6 | Buttons, segments, profile pills, delete square |
-| `Metric.panel` | 8 | Panels, issue card, pinned-app tiles |
+| `Metric.control` | 6 | Buttons, segments, delete square |
+| `Metric.panel` | 8 | Panels, issue card, app cards, profile tiles |
 | `Metric.gutter` | 20 | Page side padding |
 | `Metric.inset` | 14 | Horizontal padding inside a panel row |
 | `Metric.rowDense` | 44 | Detail rows (key / value) |
@@ -90,14 +90,14 @@ No shadows, no blur, no material.
 **Page.** `paper`, ink foreground, ink tint. Applied once with `.page()`.
 
 **Panel** (`.panel()`): paper fill, hairline `rule` border, 8 pt corners. Used for grouped
-settings, mapping groups, the live strip, pinned-app tiles. Rows inside sit at `Metric.inset`
+settings, mapping groups, the live strip, the Applications cards. Rows inside sit at `Metric.inset`
 and are separated by `Rule(inset: Metric.inset)`.
 
 **PanelGroup**: a `SectionLabel` (caption, muted, 2 pt in from the edge), the panel, then
 an optional caption footer. The single group component for Settings, Advanced, Mappings and
 the air-gesture editor.
 
-**Ledger** (Workouts and Applications): no panel. Rows are separated by `Hairline` rules
+**Ledger** (Workouts): no panel. Rows are separated by `Hairline` rules
 that draw in from the leading edge. Headings are `Heading` (label-weight title, hairline to
 the trailing edge). Captions use `Note`.
 

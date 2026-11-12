@@ -18,6 +18,7 @@ enum AppRoute: Hashable {
     case cooking
     case capture
     case note(String)
+    case reels
 }
 
 // MARK: Applications
@@ -45,15 +46,11 @@ struct ApplicationsScreen: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Apps that run from your band, also while your phone is locked.")
-                        .font(.caption).foregroundStyle(Color.muted).padding(.bottom, 16)
-                    Hairline()
-                    ForEach(Array(RunesApp.allCases.enumerated()), id: \.element) { index, app in
-                        appRow(app)
-                        Hairline(delay: 0.1 * Double(index + 1))
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
+                        ForEach(Array(RunesApp.allCases.enumerated()), id: \.element) { index, app in
+                            appCard(app).arrive(index)
+                        }
                     }
-                    Text("Touch and hold an app to pin it to the home screen.")
-                        .font(.caption).foregroundStyle(Color.muted).padding(.top, 16)
                 }
                 .padding(Metric.gutter)
             }
@@ -71,6 +68,7 @@ struct ApplicationsScreen: View {
                 case .cooking: CookingScreen(store: cook)
                 case .capture: CaptureScreen(store: capture, path: $path)
                 case .note(let id): NoteScreen(store: capture, noteID: id)
+                case .reels: ReelsScreen(store: .shared)
                 }
             }
         }
@@ -97,6 +95,7 @@ struct ApplicationsScreen: View {
         case .capture:
             if capture.isRecording { return "Recording" }
             return capture.listening ? "Listening from your pocket" : "Make a gesture, say it, and it’s written down"
+        case .reels: return "Instagram Reels, scrolled from your band"
         }
     }
 
@@ -106,29 +105,40 @@ struct ApplicationsScreen: View {
         case .score: scores.game.live
         case .cook: cook.session != nil
         case .capture: capture.listening || capture.isRecording
+        case .reels: false
         }
     }
 
-    private func appRow(_ app: RunesApp) -> some View {
+    /// An app as a card: its icon (orbited while it runs), a pin when it is on the home screen,
+    /// its name and one line on what it does or is doing.
+    private func appCard(_ app: RunesApp) -> some View {
         NavigationLink(value: app.route) {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
-                    if running(app) { OrbitDot(radius: 22) }
-                    LucideIcon(app.icon, size: 18)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top) {
+                    ZStack {
+                        Circle().strokeBorder(Color.rule, lineWidth: Metric.hairline)
+                        if running(app) { OrbitDot(radius: 22) }
+                        LucideIcon(app.icon, size: 18)
+                    }
+                    .frame(width: 44, height: 44)
+                    Spacer()
+                    if pins.isPinned(app) {
+                        LucideIcon(.pin, size: 16).foregroundStyle(Color.muted)
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                            .accessibilityLabel("Pinned")
+                    }
                 }
-                .frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.title).font(.heading)
-                    Text(subtitle(app)).font(.caption).foregroundStyle(Color.muted)
-                }
-                Spacer()
-                if pins.isPinned(app) {
-                    Text("Pinned").font(.caption).foregroundStyle(Color.muted)
-                }
-                LucideIcon(.chevronRight, size: 16).foregroundStyle(Color.muted)
+                Text(app.title).font(.heading).padding(.top, 18)
+                Text(subtitle(app)).font(.caption).foregroundStyle(Color.muted)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2, reservesSpace: true).padding(.top, 3)
             }
-            .padding(.vertical, 16).contentShape(Rectangle())
+            .padding(Metric.inset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .panel()
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Metric.panel))
+            .contentShape(Rectangle())
+            .animation(.lively, value: pins.isPinned(app))
         }
         .buttonStyle(PressRow())
         .contextMenu {
@@ -150,7 +160,7 @@ struct ApplicationsScreen: View {
 struct WorkoutsScreen: View {
     @ObservedObject var store: WorkoutStore
     @Binding var path: [AppRoute]
-    @AppStorage("workouts.tab") private var tab: WorkoutTab = .today
+    @State private var tab: WorkoutTab = .today
     @State private var showSettings = false
     @State private var choosingDay = false
 

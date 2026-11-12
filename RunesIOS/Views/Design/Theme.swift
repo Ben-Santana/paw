@@ -21,7 +21,6 @@ extension Color {
     static let soft = token(0xFAFAFA, 0x141416)
     /// Resting electrode strokes on the ring.
     static let faint = token(0xC9C9C9, 0x55555A)
-    static let wristGlow = token(0x2979FF, 0x78A7FF)
     /// The one colour: a destructive control that is about to remove something.
     static let destructive = Color(uiColor: .systemRed)
 }

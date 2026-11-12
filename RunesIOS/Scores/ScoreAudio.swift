@@ -21,14 +21,22 @@ final class ScoreAudio {
     private var engine = AVAudioEngine()
     private var silence = AVAudioPlayerNode()
     private var cues = AVAudioPlayerNode()
+    /// Stereo cues placed in space: the wrist screen's sweep from one wrist to the other.
+    private var spatial = AVAudioPlayerNode()
     private let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+    private let stereo = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
     private struct Key: Hashable { let voice: SoundVoice; let pitch: Double }
     private var rendered: [Key: AVAudioPCMBuffer] = [:]
     /// Stops the engine after a settings preview when no game is live.
     private var previewStop: Task<Void, Never>?
     private var previewSequence: Task<Void, Never>?
-    /// True while a game is live; the engine is kept running (and restarted) only then.
-    private var wanted = false
+    private var pointCue: Task<Void, Never>?
+    /// Who needs cues to play the moment they happen (a live game, a workout with sounds
+    /// on); the engine is kept running (and restarted) only while someone does.
+    private var holders: Set<String> = []
+    private var wanted: Bool { !holders.isEmpty }
+    /// Plays a band vibration chosen in place of a sound (set by `SessionController`).
+    var onBandBuzz: ((BandBuzz) -> Void)?
 
     private init() {
         let center = NotificationCenter.default
@@ -48,16 +56,47 @@ final class ScoreAudio {
 
     // MARK: Control
 
-    /// Starts the silent loop when a game goes live, stops it when the game ends.
-    func setLive(_ live: Bool) {
-        wanted = live
-        if live { ensureRunning() } else { stop() }
+    /// Starts the silent loop when a game goes live (or a workout with sounds starts),
+    /// stops it when the last of them ends.
+    func setLive(_ live: Bool, for holder: String = "score") {
+        if live { holders.insert(holder) } else { holders.remove(holder) }
+        if wanted { ensureRunning() } else { stop() }
+    }
+
+    /// Plays a sound right away: through the running engine while someone holds it live,
+    /// otherwise as a one-off like a settings preview.
+    func cue(_ voice: SoundVoice, pitch: Double = 392, volume: Double) {
+        if wanted { play(voice, pitch: pitch, volume: volume) } else { preview(voice, pitch: pitch, volume: volume) }
+    }
+
+    /// Plays a stereo pair (44.1 kHz, equal lengths) through the running engine, cutting off
+    /// the stereo cue before it. Silent unless someone holds the engine live.
+    func cue(left: [Float], right: [Float], volume: Double) {
+        guard wanted, !left.isEmpty, left.count == right.count else { return }
+        ensureRunning()
+        guard engine.isRunning else { return }
+        let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: AVAudioFrameCount(left.count))!
+        buffer.frameLength = AVAudioFrameCount(left.count)
+        left.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: left.count) }
+        right.withUnsafeBufferPointer { buffer.floatChannelData![1].update(from: $0.baseAddress!, count: right.count) }
+        spatial.volume = Float(min(1, max(0, volume)))
+        spatial.scheduleBuffer(buffer, at: nil, options: .interrupts)
+        if !spatial.isPlaying { spatial.play() }
     }
 
     /// Plays the sound for a change to a live game.
     func play(_ cue: ScoreCue, with sounds: ScoreSounds) {
         guard wanted, sounds.on else { return }
+        pointCue?.cancel()
         switch cue {
+        case .point(let point):
+            // After the point's own sound has mostly played, which a new cue would cut off.
+            guard let voice = sounds.voice(for: point) else { return }
+            pointCue = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled else { return }
+                self?.play(voice, pitch: 392, volume: sounds.volume)
+            }
         case .add: if let voice = sounds.add { play(voice, pitch: 392, volume: sounds.volume) }
         case .subtract: if let voice = sounds.take { play(voice, pitch: 392, volume: sounds.volume) }
         case .select(let player):
@@ -91,6 +130,7 @@ final class ScoreAudio {
     }
 
     private func play(_ voice: SoundVoice, pitch: Double, volume: Double, force: Bool = false) {
+        if let buzz = voice.bandBuzz { onBandBuzz?(buzz); return }
         ensureRunning(force: force)
         guard engine.isRunning else { return }
         let key = Key(voice: voice, pitch: pitch)
@@ -109,6 +149,7 @@ final class ScoreAudio {
             silence.scheduleBuffer(silentBuffer(), at: nil, options: .loops)
             silence.play()
             cues.play()
+            spatial.play()
         } catch {
             // Starting from the background can be refused; it is retried when the app is
             // next active, after an interruption, or on the next cue.
@@ -116,14 +157,15 @@ final class ScoreAudio {
     }
 
     private func stop() {
-        silence.stop(); cues.stop(); engine.stop()
+        silence.stop(); cues.stop(); spatial.stop(); engine.stop()
         AudioHub.release("score")
     }
 
     private func attach() {
-        engine.attach(silence); engine.attach(cues)
+        engine.attach(silence); engine.attach(cues); engine.attach(spatial)
         engine.connect(silence, to: engine.mainMixerNode, format: format)
         engine.connect(cues, to: engine.mainMixerNode, format: format)
+        engine.connect(spatial, to: engine.mainMixerNode, format: stereo)
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             // A route change (headphones, Bluetooth) stops the engine; start it again.
             MainActor.assumeIsolated { self?.ensureRunning() }
@@ -132,7 +174,7 @@ final class ScoreAudio {
 
     /// After the media server resets every audio object is invalid; make new ones.
     private func rebuild() {
-        engine = AVAudioEngine(); silence = AVAudioPlayerNode(); cues = AVAudioPlayerNode()
+        engine = AVAudioEngine(); silence = AVAudioPlayerNode(); cues = AVAudioPlayerNode(); spatial = AVAudioPlayerNode()
         attach()
         ensureRunning()
     }
@@ -146,7 +188,10 @@ final class ScoreAudio {
     }
 
     private func render(_ voice: SoundVoice, pitch: Double) -> AVAudioPCMBuffer {
-        let samples = SoundSynth.render(voice, frequency: pitch, rate: format.sampleRate)
+        buffer(SoundSynth.render(voice, frequency: pitch, rate: format.sampleRate))
+    }
+
+    private func buffer(_ samples: [Float]) -> AVAudioPCMBuffer {
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(max(1, samples.count)))!
         buffer.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }

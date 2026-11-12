@@ -269,6 +269,53 @@ enum WristFeedbackPhase: String, CaseIterable, Sendable {
     var payload: Data { PB.field(1, PB.field(1, duration) + PB.field(3, amplitude)) }
 }
 
+/// One motor pulse on the band: the same `wrist_feedback` request the wrist setup uses.
+/// The band runs one pulse per request and answers before taking the next, so a pattern
+/// is a list of pulses, each started `gap` ms after the previous one ends (or once the
+/// band answers, if that is later).
+struct BandPulse: Hashable, Sendable {
+    /// Milliseconds the motor runs.
+    var duration: UInt64
+    /// Motor strength, up to 255.
+    var amplitude: UInt64
+    /// Milliseconds of stillness before the next pulse.
+    var gap: UInt64 = 0
+    var payload: Data { PB.field(1, PB.field(1, duration) + PB.field(3, min(amplitude, 255))) }
+}
+
+/// The vibration patterns the band can play, offered beside the sounds in the library.
+enum BandBuzz: String, Codable, CaseIterable, Sendable {
+    case buzz, tap, double, triple, long, heartbeat, rise, fade, flutter
+
+    var label: String {
+        switch self {
+        case .buzz: "Buzz"
+        case .tap: "Light tap"
+        case .double: "Double buzz"
+        case .triple: "Triple buzz"
+        case .long: "Long buzz"
+        case .heartbeat: "Heartbeat"
+        case .rise: "Rising"
+        case .fade: "Fading"
+        case .flutter: "Flutter"
+        }
+    }
+
+    var pulses: [BandPulse] {
+        switch self {
+        case .buzz: [BandPulse(duration: 120, amplitude: 230)]
+        case .tap: [BandPulse(duration: 50, amplitude: 170)]
+        case .double: [BandPulse(duration: 90, amplitude: 230, gap: 120), BandPulse(duration: 90, amplitude: 230)]
+        case .triple: Array(repeating: BandPulse(duration: 70, amplitude: 230, gap: 110), count: 3)
+        case .long: [BandPulse(duration: 450, amplitude: 240)]
+        case .heartbeat: [BandPulse(duration: 60, amplitude: 190, gap: 90), BandPulse(duration: 110, amplitude: 245)]
+        case .rise: [120, 180, 245].map { BandPulse(duration: 80, amplitude: $0, gap: 100) }
+        case .fade: [245, 180, 120].map { BandPulse(duration: 80, amplitude: $0, gap: 100) }
+        case .flutter: Array(repeating: BandPulse(duration: 40, amplitude: 210, gap: 60), count: 5)
+        }
+    }
+}
+
 enum WristFeedbackResult: String, Sendable {
     case accepted, rejected, unconfirmed
     init(_ payload: Data) {

@@ -98,13 +98,14 @@ struct SettingsView<Advanced: View>: View {
                         LinkRow("Licenses") { LicensesView() }
                     }
                     PanelGroup(nil) {
-                        LinkRow("Motion lab") { MotionLabScreen() }
+                        LinkRow("Workout data") { MotionLabScreen() }
                         Rule()
                         LinkRow("Advanced") { advanced() }
                     }
                 }
                 .padding(Metric.gutter)
             }
+            .animation(.entrance, value: values.macs.map(\.id))
             .page()
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { BackToolbarItem(action: actions.done) }

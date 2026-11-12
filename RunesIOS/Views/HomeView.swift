@@ -119,7 +119,7 @@ struct HomeView: View {
     /// Pinned applications, centred under the ring. Empty until the user holds an app
     /// in Applications and pins it; three at most.
     private var pinnedApps: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 20) {
             ForEach(Array(pins.pinned.enumerated()), id: \.element) { index, app in
                 pinTile(app, index: index)
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
@@ -135,15 +135,12 @@ struct HomeView: View {
         Button {
             if replacing { pins.replace(app) } else { actions.openApp(app) }
         } label: {
-            VStack(spacing: 8) {
-                LucideIcon(app.icon, size: 20)
-                Text(app.title).font(.caption).lineLimit(1)
-            }
-            .frame(width: 96, height: 72)
-            .panel()
-            .overlay(RoundedRectangle(cornerRadius: Metric.panel)
-                .strokeBorder(Color.ink, lineWidth: Metric.hairline).opacity(replacing ? 1 : 0))
-            .contentShape(Rectangle())
+            // The icon alone, in the same hairline circle the app wears in Applications.
+            LucideIcon(app.icon, size: 22)
+                .frame(width: 56, height: 56)
+                .background(Color.paper, in: Circle())
+                .overlay(Circle().strokeBorder(replacing ? Color.ink : Color.rule, lineWidth: Metric.hairline))
+                .contentShape(Circle())
         }
         .buttonStyle(RingButtonStyle())
         .jiggle(replacing, index: index)
@@ -205,9 +202,9 @@ private struct RingButtonStyle: ButtonStyle {
 
 /// Applications that can be pinned to the home screen.
 enum RunesApp: String, CaseIterable, Identifiable {
-    case workouts, score, cook, capture
+    case workouts, score, cook, capture, reels
     var id: String { rawValue }
-    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score"; case .cook: "Cook"; case .capture: "Capture" } }
-    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2; case .cook: .chefHat; case .capture: .mic } }
-    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score; case .cook: .cook; case .capture: .capture } }
+    var title: String { switch self { case .workouts: "Workouts"; case .score: "Score"; case .cook: "Cook"; case .capture: "Capture"; case .reels: "Reels" } }
+    var icon: Lucide { switch self { case .workouts: .dumbbell; case .score: .gamepad2; case .cook: .chefHat; case .capture: .mic; case .reels: .video } }
+    var route: AppRoute { switch self { case .workouts: .workouts; case .score: .score; case .cook: .cook; case .capture: .capture; case .reels: .reels } }
 }
